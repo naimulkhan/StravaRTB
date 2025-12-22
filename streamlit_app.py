@@ -90,7 +90,7 @@ sheet = get_sheet()
 init_db(sheet)
 
 # --- HEADER & WINNER ---
-st.title("🏃 Segment Challenge")
+st.title("🏃 Run The Beaches Toronto Segment Challenge")
 
 data = sheet.get_all_records()
 df = pd.DataFrame(data)
@@ -115,6 +115,7 @@ if not df.empty and list(SEGMENTS.values())[0] in df.columns:
 
 # --- SIDEBAR: JOIN & ADMIN ---
 with st.sidebar:
+    st.image("logo.png", use_container_width=True)
     st.header("Join Challenge")
     auth_url = (
         f"https://www.strava.com/oauth/authorize?client_id={st.secrets['strava']['client_id']}"

@@ -7,7 +7,7 @@ from datetime import datetime
 import time
 
 # --- CONFIGURATION ---
-CHALLENGE_START_DATE = datetime(2025, 12, 17) # Set to before your runs
+CHALLENGE_START_DATE = datetime(2025, 12, 18) # Set to before your runs
 
 # UPDATE THIS: Map ID to Name
 SEGMENTS = {

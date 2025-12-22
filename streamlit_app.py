@@ -12,8 +12,15 @@ SCOPES = ['read', 'activity:read_all']
 
 # REPLACE with your actual Segment IDs (Integers)
 SEGMENT_IDS = [
-    365235, 
-    652352, 
+    22655740, 
+    40409507, 
+    8223506,
+    3219147,
+    40410183,
+    1705023,
+    24820256,
+
+
     # ... add the rest here
 ]
 

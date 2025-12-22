@@ -12,7 +12,19 @@ STRAVA_CLIENT_SECRET = os.environ["STRAVA_CLIENT_SECRET"]
 GCP_JSON = json.loads(os.environ["GCP_SERVICE_ACCOUNT_JSON"])
 SHEET_NAME = os.environ["SHEET_NAME"]
 
-SEGMENT_IDS = [12345, 67890] # REPLACE WITH YOUR 7 IDS
+SEGMENT_IDS = [
+    22655740, 
+    40409507, 
+    8223506,
+    3219147,
+    40410183,
+    1705023,
+    24820256,
+
+
+    # ... add the rest here
+]
+
 
 def get_sheet():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']

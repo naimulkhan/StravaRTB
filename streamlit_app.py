@@ -215,6 +215,7 @@ with st.sidebar:
                 
                 if not df_edit.empty:
                     runner_names = df_edit['name'].tolist()
+                    # Added key="edit_select" to ensure the dropdown itself is stable
                     selected_runner = st.selectbox("Select Runner", runner_names, key="edit_select")
                     runner_row = df_edit[df_edit['name'] == selected_runner].iloc[0]
                     
@@ -224,7 +225,14 @@ with st.sidebar:
                         for i, seg_name in enumerate(SEGMENTS.values()):
                             current_val = int(runner_row[seg_name])
                             with cols[i % 2]:
-                                edit_vals[seg_name] = st.number_input(seg_name, value=current_val, min_value=0, key=f"edit_{seg_name}")
+                                # --- THE FIX IS HERE ---
+                                # We add _{selected_runner} to the key so it refreshes when you change runners
+                                edit_vals[seg_name] = st.number_input(
+                                    seg_name, 
+                                    value=current_val, 
+                                    min_value=0, 
+                                    key=f"edit_{seg_name}_{selected_runner}"
+                                )
                             
                         if st.form_submit_button("Save Changes"):
                             row_idx = df_edit[df_edit['name'] == selected_runner].index[0] + 2

@@ -84,13 +84,13 @@ def fetch_efforts(access_token, start_epoch):
     return counts, latest_run_epoch
 
 # --- UI LAYOUT ---
-st.set_page_config(page_title="Run Club Leaderboard", page_icon="🏃")
+st.set_page_config(page_title="Run The Beaches Toronto!", page_icon="🏃")
 
 sheet = get_sheet()
 init_db(sheet)
 
 # --- HEADER & WINNER ---
-st.title("🏃 Run The Beaches Toronto Segment Challenge")
+st.markdown("<h1 style='text-align: center;'>🏃 Run The Beaches Toronto Segment Challenge</h1>", unsafe_allow_html=True)
 
 data = sheet.get_all_records()
 df = pd.DataFrame(data)

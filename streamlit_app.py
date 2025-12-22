@@ -33,7 +33,6 @@ def get_sheet():
 def init_db(sheet):
     """Creates headers if the sheet is empty."""
     if not sheet.row_values(1):
-        # Headers: Meta data first, then segments
         headers = ["athlete_id", "name", "refresh_token", "last_synced", "total_count"] + list(SEGMENTS.values())
         sheet.append_row(headers)
 
@@ -71,7 +70,7 @@ def fetch_efforts(access_token, start_epoch):
         if run_time > latest_run_epoch:
             latest_run_epoch = int(run_time)
             
-        time.sleep(0.5) # Safety buffer
+        time.sleep(0.5) 
         detail_url = f"https://www.strava.com/api/v3/activities/{act['id']}"
         detail_res = requests.get(detail_url, headers=headers)
         
@@ -90,38 +89,29 @@ st.set_page_config(page_title="Run Club Leaderboard", page_icon="🏃")
 sheet = get_sheet()
 init_db(sheet)
 
-# --- HEADER & WINNER CALCULATION ---
+# --- HEADER & WINNER ---
 st.title("🏃 Segment Challenge")
 
-# Fetch Data for display
 data = sheet.get_all_records()
+df = pd.DataFrame(data)
 
-if data:
-    df = pd.DataFrame(data)
-    
-    # CALCULATE "GRAND WINNER" (Most Segments Won)
+if not df.empty and list(SEGMENTS.values())[0] in df.columns:
     # 1. Identify leader for each segment
     segment_leaders = []
-    if not df.empty and list(SEGMENTS.values())[0] in df.columns:
-        for seg_name in SEGMENTS.values():
-            # Find max value for this segment
-            max_val = df[seg_name].max()
-            if max_val > 0:
-                # Find all runners who have this max value (handling ties)
-                leaders = df[df[seg_name] == max_val]['name'].tolist()
-                segment_leaders.extend(leaders)
-        
-        # 2. Count "Wins" per runner
-        if segment_leaders:
-            win_counts = pd.Series(segment_leaders).value_counts()
-            max_wins = win_counts.max()
-            # Get runners with the most wins
-            champions = win_counts[win_counts == max_wins].index.tolist()
-            
-            # 3. Display
-            st.info(f"👑 **Current Leader:** {', '.join(champions)} ({max_wins} Segments Won)")
-        else:
-            st.info("👑 Current Leader: None yet!")
+    for seg_name in SEGMENTS.values():
+        max_val = df[seg_name].max()
+        if max_val > 0:
+            leaders = df[df[seg_name] == max_val]['name'].tolist()
+            segment_leaders.extend(leaders)
+    
+    # 2. Count "Wins"
+    if segment_leaders:
+        win_counts = pd.Series(segment_leaders).value_counts()
+        max_wins = win_counts.max()
+        champions = win_counts[win_counts == max_wins].index.tolist()
+        st.info(f"👑 **Current Leader:** {', '.join(champions)} ({max_wins} Segments Won)")
+    else:
+        st.info("👑 Current Leader: None yet!")
 
 # --- SIDEBAR: JOIN & ADMIN ---
 with st.sidebar:
@@ -185,98 +175,136 @@ with st.sidebar:
         if admin_pass == st.secrets["admin"]["password"]:
             st.success("Authenticated")
             
-            # OPTION A: SYNC ALL
-            if st.button("🔄 Sync All Athletes"):
-                records = sheet.get_all_records()
-                bar = st.progress(0, text="Syncing...")
-                
-                for i, row in enumerate(records):
-                    bar.progress((i) / len(records), text=f"Syncing {row['name']}...")
-                    new_token = get_new_token(row['refresh_token'])
-                    
-                    if new_token:
-                        last_epoch = row['last_synced']
-                        new_counts, new_epoch = fetch_efforts(new_token, last_epoch)
-                        total_new = sum(new_counts.values())
-                        
-                        if total_new > 0:
-                            row_idx = i + 2
-                            # Update Time & Total
-                            sheet.update_cell(row_idx, 4, new_epoch)
-                            sheet.update_cell(row_idx, 5, row['total_count'] + total_new)
-                            
-                            # Update Segments
-                            for s_idx, sid in enumerate(SEGMENT_IDS):
-                                if new_counts[sid] > 0:
-                                    col_idx = 6 + s_idx
-                                    current_val = row[SEGMENTS[sid]]
-                                    sheet.update_cell(row_idx, col_idx, current_val + new_counts[sid])
-                    time.sleep(1)
-                bar.empty()
-                st.toast("Sync Complete!")
-                time.sleep(1)
-                st.rerun()
+            # --- ADMIN TABS ---
+            tab1, tab2, tab3, tab4 = st.tabs(["Add", "Edit", "Sync", "Delete"])
 
-            # OPTION B: BULK EDIT RUNNER
-            st.markdown("---")
-            st.caption("Edit Runner Stats")
-            
-            records = sheet.get_all_records()
-            df_edit = pd.DataFrame(records)
-            
-            if not df_edit.empty:
-                # 1. Select Runner
-                runner_names = df_edit['name'].tolist()
-                selected_runner = st.selectbox("Select Runner to Edit", runner_names)
-                
-                # 2. Show Form with ALL segments
-                runner_row = df_edit[df_edit['name'] == selected_runner].iloc[0]
-                
-                with st.form("edit_form"):
-                    st.write(f"Editing: **{selected_runner}**")
-                    new_values = {}
+            # 1. ADD NEW RUNNER
+            with tab1:
+                st.caption("Add Manual Runner (marked with *)")
+                with st.form("add_runner_form"):
+                    new_name = st.text_input("Name")
                     
-                    # Create a number input for every segment
-                    # We start looping from SEGMENT definitions to keep order
-                    for seg_name in SEGMENTS.values():
-                        current_val = int(runner_row[seg_name])
-                        new_values[seg_name] = st.number_input(seg_name, value=current_val, min_value=0)
-                        
-                    if st.form_submit_button("Save Changes"):
-                        # Find Row Index
-                        row_idx = df_edit[df_edit['name'] == selected_runner].index[0] + 2
-                        
-                        # Update every column
-                        for seg_name, val in new_values.items():
-                            col_idx = df_edit.columns.get_loc(seg_name) + 1
-                            sheet.update_cell(row_idx, col_idx, val)
+                    new_values = {}
+                    cols = st.columns(2)
+                    for i, seg_name in enumerate(SEGMENTS.values()):
+                        with cols[i % 2]:
+                            new_values[seg_name] = st.number_input(seg_name, min_value=0, value=0, key=f"add_{seg_name}")
+                    
+                    if st.form_submit_button("Add Runner"):
+                        if new_name:
+                            # Add * to name to mark as manual
+                            final_name = f"{new_name} *"
+                            fake_id = random.randint(10000000, 99999999)
+                            total = sum(new_values.values())
+                            segment_vals = [new_values[s] for s in SEGMENTS.values()]
                             
-                        # Recalculate Total
-                        new_total = sum(new_values.values())
-                        total_col = df_edit.columns.get_loc("total_count") + 1
-                        sheet.update_cell(row_idx, total_col, new_total)
+                            new_row = [fake_id, final_name, "MANUAL", 0, total] + segment_vals
+                            
+                            sheet.append_row(new_row)
+                            st.success(f"Added {final_name}!")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("Name is required.")
+
+            # 2. EDIT EXISTING
+            with tab2:
+                records = sheet.get_all_records()
+                df_edit = pd.DataFrame(records)
+                
+                if not df_edit.empty:
+                    runner_names = df_edit['name'].tolist()
+                    selected_runner = st.selectbox("Select Runner", runner_names, key="edit_select")
+                    runner_row = df_edit[df_edit['name'] == selected_runner].iloc[0]
+                    
+                    with st.form("edit_form"):
+                        edit_vals = {}
+                        cols = st.columns(2)
+                        for i, seg_name in enumerate(SEGMENTS.values()):
+                            current_val = int(runner_row[seg_name])
+                            with cols[i % 2]:
+                                edit_vals[seg_name] = st.number_input(seg_name, value=current_val, min_value=0, key=f"edit_{seg_name}")
+                            
+                        if st.form_submit_button("Save Changes"):
+                            row_idx = df_edit[df_edit['name'] == selected_runner].index[0] + 2
+                            
+                            for seg_name, val in edit_vals.items():
+                                col_idx = df_edit.columns.get_loc(seg_name) + 1
+                                sheet.update_cell(row_idx, col_idx, val)
+                                
+                            new_total = sum(edit_vals.values())
+                            total_col = df_edit.columns.get_loc("total_count") + 1
+                            sheet.update_cell(row_idx, total_col, new_total)
+                            
+                            st.success("Updated!")
+                            time.sleep(1)
+                            st.rerun()
+
+            # 3. SYNC ALL
+            with tab3:
+                st.caption("Syncs only connected Strava users.")
+                if st.button("Start Sync"):
+                    records = sheet.get_all_records()
+                    bar = st.progress(0, text="Syncing...")
+                    
+                    for i, row in enumerate(records):
+                        # SKIP MANUAL USERS
+                        if row['refresh_token'] == "MANUAL":
+                            continue
+
+                        bar.progress((i) / len(records), text=f"Syncing {row['name']}...")
+                        new_token = get_new_token(row['refresh_token'])
                         
-                        st.success("Updated!")
+                        if new_token:
+                            last_epoch = row['last_synced']
+                            new_counts, new_epoch = fetch_efforts(new_token, last_epoch)
+                            total_new = sum(new_counts.values())
+                            
+                            if total_new > 0:
+                                row_idx = i + 2
+                                sheet.update_cell(row_idx, 4, new_epoch)
+                                sheet.update_cell(row_idx, 5, row['total_count'] + total_new)
+                                
+                                for s_idx, sid in enumerate(SEGMENT_IDS):
+                                    if new_counts[sid] > 0:
+                                        col_idx = 6 + s_idx
+                                        current_val = row[SEGMENTS[sid]]
+                                        sheet.update_cell(row_idx, col_idx, current_val + new_counts[sid])
+                        time.sleep(1)
+                    bar.empty()
+                    st.success("Sync Complete!")
+                    time.sleep(1)
+                    st.rerun()
+            
+            # 4. DELETE RUNNER
+            with tab4:
+                st.caption("⚠️ Permanently remove a runner")
+                records = sheet.get_all_records()
+                df_del = pd.DataFrame(records)
+                
+                if not df_del.empty:
+                    runner_to_del = st.selectbox("Select Runner to Delete", df_del['name'].tolist(), key="del_select")
+                    
+                    if st.button("Delete Runner", type="primary"):
+                        # Find Row Index
+                        row_idx = df_del[df_del['name'] == runner_to_del].index[0] + 2
+                        sheet.delete_rows(row_idx)
+                        st.success(f"Deleted {runner_to_del}")
                         time.sleep(1)
                         st.rerun()
 
 # --- DISPLAY LEADERBOARDS ---
-# data was fetched at the top
 if data:
     df_disp = pd.DataFrame(data)
-    
     if list(SEGMENTS.values())[0] in df_disp.columns:
-        # Create Tabs for Segments ONLY (No Overall)
         tabs = st.tabs(list(SEGMENTS.values()))
         
         for i, seg_name in enumerate(SEGMENTS.values()):
             with tabs[i]:
-                # Filter: Show only runners with > 0 efforts
                 seg_df = df_disp[['name', seg_name]].sort_values(by=seg_name, ascending=False).reset_index(drop=True)
                 seg_df = seg_df[seg_df[seg_name] > 0] 
                 
                 if not seg_df.empty:
-                    # Highlight Top 1
                     st.dataframe(
                         seg_df,
                         column_config={
@@ -287,11 +315,11 @@ if data:
                         hide_index=True
                     )
                 else:
-                    st.caption("No efforts recorded for this segment yet.")
+                    st.caption("No efforts recorded.")
     else:
-        st.info("Database empty. Waiting for runners.")
+        st.info("Database empty.")
 else:
-    st.info("No runners yet. Be the first to join!")
+    st.info("No runners yet.")
 
 st.divider()
 st.caption(f"Last system update: {datetime.now().strftime('%H:%M UTC')}")

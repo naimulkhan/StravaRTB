@@ -6,30 +6,36 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import time
 
-# --- CONFIG ---
-CHALLENGE_START_DATE = datetime(2025, 12, 17) # SET THIS to your challenge start date
-SCOPES = ['read', 'activity:read_all']
+# --- CONFIGURATION ---
+CHALLENGE_START_DATE = datetime(2025, 12, 1) # Set to before your runs
 
-# REPLACE with your actual Segment IDs (Integers)
-SEGMENT_IDS = [
-    22655740, 
-    40409507, 
-    8223506,
-    3219147,
-    40410183,
-    1705023,
-    24820256,
+# UPDATE THIS: Map ID to Name
+SEGMENTS = {
+    22655740: "Hill Climb",
+    40409507: "River Sprint",
+    8223506:  "Park Loop",
+    3219147:  "Main St Dash",
+    40410183: "The Big One",
+    1705023:  "Coffee Run",
+    24820256: "Cool Down"
+}
 
-
-    # ... add the rest here
-]
+SEGMENT_IDS = list(SEGMENTS.keys()) # Helper list for checking IDs
 
 # --- SETUP ---
 def get_sheet():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
     client = gspread.authorize(creds)
-    return client.open(st.secrets["google"]["sheet_name"]).sheet1
+    sheet = client.open(st.secrets["google"]["sheet_name"]).sheet1
+    return sheet
+
+def init_db(sheet):
+    """Creates headers if the sheet is empty."""
+    if not sheet.row_values(1):
+        # Static Headers + Dynamic Segment Names
+        headers = ["athlete_id", "name", "refresh_token", "last_synced", "total_count"] + list(SEGMENTS.values())
+        sheet.append_row(headers)
 
 def exchange_code(code):
     res = requests.post("https://www.strava.com/oauth/token", data={
@@ -41,68 +47,56 @@ def exchange_code(code):
     return res.json()
 
 def initial_backfill(access_token):
+    """Counts efforts per segment individually."""
     headers = {'Authorization': f"Bearer {access_token}"}
-    
-    # 1. Get runs since challenge start
     start_epoch = int(CHALLENGE_START_DATE.timestamp())
-    activities_url = "https://www.strava.com/api/v3/athlete/activities"
     
+    # Init counters for each segment (set to 0)
+    counts = {seg_id: 0 for seg_id in SEGMENT_IDS}
+    
+    # Get Activities
+    activities_url = "https://www.strava.com/api/v3/athlete/activities"
     params = {'after': start_epoch, 'per_page': 200}
     response = requests.get(activities_url, headers=headers, params=params)
     
-    # DEBUG: Print status
-    st.write(f"DEBUG: API Status Code: {response.status_code}")
-    
     if response.status_code != 200:
-        st.error("Failed to fetch activities.")
-        return 0, start_epoch
+        return counts, start_epoch
 
     activities = response.json()
-    total_count = 0
     latest_run_epoch = start_epoch
     
-    st.write(f"DEBUG: Found {len(activities)} activities since {CHALLENGE_START_DATE}")
-
     my_bar = st.progress(0, text="Analyzing runs...")
     
     for i, act in enumerate(activities):
-        # Update timestamp
         run_time = datetime.strptime(act['start_date'], "%Y-%m-%dT%H:%M:%SZ").timestamp()
         if run_time > latest_run_epoch:
             latest_run_epoch = int(run_time)
-
-        # DEBUG: Show which run we are checking
-        with st.expander(f"Checking run: {act['name']} ({act['start_date']})"):
             
-            detail_url = f"https://www.strava.com/api/v3/activities/{act['id']}"
-            detail_res = requests.get(detail_url, headers=headers)
-            
-            if detail_res.status_code == 200:
-                efforts = detail_res.json().get('segment_efforts', [])
-                
-                # LIST ALL SEGMENTS FOUND
-                found_ids = [e['segment']['id'] for e in efforts]
-                st.write(f"Found {len(efforts)} total segments on this run.")
-                st.write(f"IDs found: {found_ids}")
-                
-                # Check matches
-                matches = [e for e in efforts if e['segment']['id'] in SEGMENT_IDS]
-                if matches:
-                    st.success(f"✅ MATCH! Found {len(matches)} target segments!")
-                    total_count += len(matches)
-                else:
-                    st.warning("❌ No target segments matched in this run.")
-            else:
-                st.error("Could not fetch details for this run.")
-
-        my_bar.progress((i + 1) / len(activities))
+        # Get Details
+        detail_url = f"https://www.strava.com/api/v3/activities/{act['id']}"
+        detail_res = requests.get(detail_url, headers=headers)
         
+        if detail_res.status_code == 200:
+            efforts = detail_res.json().get('segment_efforts', [])
+            
+            # Tally up matches
+            for effort in efforts:
+                sid = effort['segment']['id']
+                if sid in counts:
+                    counts[sid] += 1
+                    
+        if len(activities) > 0:
+            my_bar.progress((i + 1) / len(activities))
+            
     my_bar.empty()
-    return total_count, latest_run_epoch
+    return counts, latest_run_epoch
+
 # --- UI ---
+st.set_page_config(page_title="Run Club Leaderboard", page_icon="🏃")
 st.title("🏃 Segment Challenge Leaderboard")
 
 sheet = get_sheet()
+init_db(sheet) # Ensure headers exist
 
 # Sidebar: Join
 with st.sidebar:
@@ -120,11 +114,10 @@ with st.sidebar:
         
         if "access_token" in data:
             ath = data['athlete']
-            # Check if exists
             records = sheet.get_all_records()
             df = pd.DataFrame(records)
             
-            # Check if athlete_id exists in the dataframe (handle empty sheet case)
+            # Check if exists
             is_registered = False
             if not df.empty and 'athlete_id' in df.columns:
                  if ath['id'] in df['athlete_id'].values:
@@ -133,43 +126,71 @@ with st.sidebar:
             if is_registered:
                 st.warning("You are already registered!")
             else:
-                # Add new user with immediate backfill
-                st.info("Success! Scanning your past runs... please wait.")
+                st.info("Scanning history... please wait.")
+                counts, last_epoch = initial_backfill(data['access_token'])
                 
-                # Run the backfill logic
-                initial_count, last_epoch = initial_backfill(data['access_token'])
+                # Prepare Row: Meta Data + Total + Individual Segment Counts
+                total = sum(counts.values())
+                # Order matters: must match headers created in init_db
+                segment_values = [counts[sid] for sid in SEGMENT_IDS]
                 
-                # Append to Sheet
-                sheet.append_row([
+                new_row = [
                     ath['id'], 
                     f"{ath['firstname']} {ath['lastname']}", 
                     data['refresh_token'], 
-                    initial_count, 
-                    last_epoch
-                ])
+                    last_epoch,
+                    total
+                ] + segment_values
                 
+                sheet.append_row(new_row)
                 st.balloons()
-                st.success(f"Registered! Found {initial_count} efforts so far.")
-                st.query_params.clear() # Clear URL to prevent re-run on refresh
+                st.success(f"Registered! Found {total} total efforts.")
+                st.query_params.clear()
 
-# Display Leaderboard
+# --- DISPLAY LEADERBOARDS ---
 data = sheet.get_all_records()
+
 if data:
     df = pd.DataFrame(data)
-    # Sort by total_count desc
-    if not df.empty and 'total_count' in df.columns:
-        df = df.sort_values(by='total_count', ascending=False).reset_index(drop=True)
-        st.dataframe(
-            df[['name', 'total_count']],
-            column_config={
-                "name": "Runner", 
-                "total_count": st.column_config.NumberColumn("Efforts", format="%d ⚡")
-            },
-            use_container_width=True
-        )
-    else:
-        st.info("No data yet.")
-        
-    st.caption(f"Syncs automatically every 24h. Last system update: {datetime.now().strftime('%H:%M UTC')}")
+    
+    # Create Tabs: One for Overall, and one for each Segment
+    tab_names = ["🏆 Overall"] + list(SEGMENTS.values())
+    tabs = st.tabs(tab_names)
+    
+    # 1. Overall Tab
+    with tabs[0]:
+        if 'total_count' in df.columns:
+            leaderboard = df[['name', 'total_count']].sort_values(by='total_count', ascending=False).reset_index(drop=True)
+            st.dataframe(
+                leaderboard, 
+                column_config={
+                    "name": "Runner", 
+                    "total_count": st.column_config.NumberColumn("Total Efforts", format="%d ⚡")
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+            
+    # 2. Segment Tabs
+    # We iterate through the segment names to populate the other tabs
+    for i, seg_name in enumerate(SEGMENTS.values()):
+        with tabs[i + 1]: # +1 because index 0 is Overall
+            if seg_name in df.columns:
+                # Filter: Show only runners who have at least 1 effort on this segment
+                seg_df = df[['name', seg_name]].sort_values(by=seg_name, ascending=False).reset_index(drop=True)
+                
+                # Highlight the Top 1 (The Segment Leader)
+                st.dataframe(
+                    seg_df,
+                    column_config={
+                        "name": "Runner",
+                        seg_name: st.column_config.NumberColumn("Efforts", format="%d 🥇")
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
 else:
-    st.info("No runners registered yet. Use the sidebar to join!")
+    st.info("No runners yet. Be the first to join!")
+
+st.divider()
+st.caption(f"Syncs automatically every 24h. Last update: {datetime.now().strftime('%H:%M UTC')}")

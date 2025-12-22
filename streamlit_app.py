@@ -33,14 +33,12 @@ def get_sheet():
 def init_db(sheet):
     """Creates headers if the sheet is empty."""
     if not sheet.row_values(1):
-        # 1-based index mapping:
-        # 1:athlete_id, 2:name, 3:refresh_token, 4:last_synced_epoch, 5:total_count, 6+:Segments
+        # Headers: Meta data first, then segments
         headers = ["athlete_id", "name", "refresh_token", "last_synced", "total_count"] + list(SEGMENTS.values())
         sheet.append_row(headers)
 
 # --- STRAVA API FUNCTIONS ---
 def get_new_token(refresh_token):
-    """Exchanges a refresh token for a new access token."""
     res = requests.post("https://www.strava.com/oauth/token", data={
         'client_id': st.secrets["strava"]["client_id"],
         'client_secret': st.secrets["strava"]["client_secret"],
@@ -52,16 +50,13 @@ def get_new_token(refresh_token):
     return None
 
 def fetch_efforts(access_token, start_epoch):
-    """Scans for segment efforts after a specific date."""
     headers = {'Authorization': f"Bearer {access_token}"}
     activities_url = "https://www.strava.com/api/v3/athlete/activities"
     
-    # Init counters for each segment (set to 0)
     counts = {seg_id: 0 for seg_id in SEGMENT_IDS}
     latest_run_epoch = start_epoch
 
-    # Get Summary Activities
-    params = {'after': start_epoch, 'per_page': 50} # 50 is safe for a "refresh"
+    params = {'after': start_epoch, 'per_page': 50}
     response = requests.get(activities_url, headers=headers, params=params)
     
     if response.status_code != 200:
@@ -72,13 +67,11 @@ def fetch_efforts(access_token, start_epoch):
         return counts, latest_run_epoch
     
     for act in activities:
-        # Update timestamp marker
         run_time = datetime.strptime(act['start_date'], "%Y-%m-%dT%H:%M:%SZ").timestamp()
         if run_time > latest_run_epoch:
             latest_run_epoch = int(run_time)
             
-        # Get Detailed Activity
-        time.sleep(0.5) # Rate limit protection
+        time.sleep(0.5) # Safety buffer
         detail_url = f"https://www.strava.com/api/v3/activities/{act['id']}"
         detail_res = requests.get(detail_url, headers=headers)
         
@@ -93,10 +86,42 @@ def fetch_efforts(access_token, start_epoch):
 
 # --- UI LAYOUT ---
 st.set_page_config(page_title="Run Club Leaderboard", page_icon="🏃")
-st.title("🏃 Segment Challenge Leaderboard")
 
 sheet = get_sheet()
 init_db(sheet)
+
+# --- HEADER & WINNER CALCULATION ---
+st.title("🏃 Segment Challenge")
+
+# Fetch Data for display
+data = sheet.get_all_records()
+
+if data:
+    df = pd.DataFrame(data)
+    
+    # CALCULATE "GRAND WINNER" (Most Segments Won)
+    # 1. Identify leader for each segment
+    segment_leaders = []
+    if not df.empty and list(SEGMENTS.values())[0] in df.columns:
+        for seg_name in SEGMENTS.values():
+            # Find max value for this segment
+            max_val = df[seg_name].max()
+            if max_val > 0:
+                # Find all runners who have this max value (handling ties)
+                leaders = df[df[seg_name] == max_val]['name'].tolist()
+                segment_leaders.extend(leaders)
+        
+        # 2. Count "Wins" per runner
+        if segment_leaders:
+            win_counts = pd.Series(segment_leaders).value_counts()
+            max_wins = win_counts.max()
+            # Get runners with the most wins
+            champions = win_counts[win_counts == max_wins].index.tolist()
+            
+            # 3. Display
+            st.info(f"👑 **Current Leader:** {', '.join(champions)} ({max_wins} Segments Won)")
+        else:
+            st.info("👑 Current Leader: None yet!")
 
 # --- SIDEBAR: JOIN & ADMIN ---
 with st.sidebar:
@@ -111,24 +136,22 @@ with st.sidebar:
     # Handle Callback
     if "code" in st.query_params:
         code = st.query_params["code"]
-        # Exchange for token
         res = requests.post("https://www.strava.com/oauth/token", data={
             'client_id': st.secrets["strava"]["client_id"],
             'client_secret': st.secrets["strava"]["client_secret"],
             'code': code,
             'grant_type': 'authorization_code'
         })
-        data = res.json()
+        data_json = res.json()
         
-        if "access_token" in data:
-            ath = data['athlete']
+        if "access_token" in data_json:
+            ath = data_json['athlete']
             records = sheet.get_all_records()
-            df = pd.DataFrame(records)
+            df_auth = pd.DataFrame(records)
             
-            # Check if exists
             is_registered = False
-            if not df.empty and 'athlete_id' in df.columns:
-                 if ath['id'] in df['athlete_id'].values:
+            if not df_auth.empty and 'athlete_id' in df_auth.columns:
+                 if ath['id'] in df_auth['athlete_id'].values:
                      is_registered = True
             
             if is_registered:
@@ -136,23 +159,22 @@ with st.sidebar:
             else:
                 st.info("Scanning history... please wait.")
                 start_epoch = int(CHALLENGE_START_DATE.timestamp())
-                counts, last_epoch = fetch_efforts(data['access_token'], start_epoch)
+                counts, last_epoch = fetch_efforts(data_json['access_token'], start_epoch)
                 
-                # Prepare Row
                 total = sum(counts.values())
                 segment_values = [counts[sid] for sid in SEGMENT_IDS]
                 
                 new_row = [
                     ath['id'], 
                     f"{ath['firstname']} {ath['lastname']}", 
-                    data['refresh_token'], 
+                    data_json['refresh_token'], 
                     last_epoch,
                     total
                 ] + segment_values
                 
                 sheet.append_row(new_row)
                 st.balloons()
-                st.success(f"Registered! Found {total} efforts.")
+                st.success("Registered!")
                 st.query_params.clear()
 
     # --- ADMIN SECTION ---
@@ -161,135 +183,100 @@ with st.sidebar:
         admin_pass = st.text_input("Password", type="password")
         
         if admin_pass == st.secrets["admin"]["password"]:
-            st.success("Admin Mode Active")
+            st.success("Authenticated")
             
-            # --- OPTION A: REFRESH ALL ---
+            # OPTION A: SYNC ALL
             if st.button("🔄 Sync All Athletes"):
                 records = sheet.get_all_records()
-                progress_bar = st.progress(0, text="Starting Sync...")
+                bar = st.progress(0, text="Syncing...")
                 
                 for i, row in enumerate(records):
-                    # Progress Update
-                    progress_bar.progress((i) / len(records), text=f"Syncing {row['name']}...")
-                    
-                    # 1. Get New Access Token
+                    bar.progress((i) / len(records), text=f"Syncing {row['name']}...")
                     new_token = get_new_token(row['refresh_token'])
                     
                     if new_token:
-                        # 2. Find new efforts since last sync
                         last_epoch = row['last_synced']
                         new_counts, new_epoch = fetch_efforts(new_token, last_epoch)
-                        
                         total_new = sum(new_counts.values())
                         
                         if total_new > 0:
-                            # 3. Update Sheet
-                            # Row index = i + 2 (header is 1, list is 0-indexed)
                             row_idx = i + 2
-                            
-                            # Update timestamp (Col 4)
+                            # Update Time & Total
                             sheet.update_cell(row_idx, 4, new_epoch)
+                            sheet.update_cell(row_idx, 5, row['total_count'] + total_new)
                             
-                            # Update Total (Col 5)
-                            current_total = row['total_count']
-                            sheet.update_cell(row_idx, 5, current_total + total_new)
-                            
-                            # Update Specific Segments (Cols 6+)
-                            # We loop through SEGMENT_IDS to match the column order
+                            # Update Segments
                             for s_idx, sid in enumerate(SEGMENT_IDS):
                                 if new_counts[sid] > 0:
                                     col_idx = 6 + s_idx
                                     current_val = row[SEGMENTS[sid]]
                                     sheet.update_cell(row_idx, col_idx, current_val + new_counts[sid])
-                                    
-                    time.sleep(1) # Safety buffer for API
-                
-                progress_bar.empty()
+                    time.sleep(1)
+                bar.empty()
                 st.toast("Sync Complete!")
                 time.sleep(1)
                 st.rerun()
 
-            # --- OPTION B: MANUAL EDIT ---
+            # OPTION B: BULK EDIT RUNNER
             st.markdown("---")
-            st.caption("Manual Override")
+            st.caption("Edit Runner Stats")
             
             records = sheet.get_all_records()
-            df = pd.DataFrame(records)
+            df_edit = pd.DataFrame(records)
             
-            if not df.empty:
-                runner = st.selectbox("Runner", df['name'].unique())
-                segment = st.selectbox("Segment", list(SEGMENTS.values()))
+            if not df_edit.empty:
+                # 1. Select Runner
+                runner_names = df_edit['name'].tolist()
+                selected_runner = st.selectbox("Select Runner to Edit", runner_names)
                 
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("➕ Add 1"):
-                        row_idx = df[df['name'] == runner].index[0] + 2
+                # 2. Show Form with ALL segments
+                runner_row = df_edit[df_edit['name'] == selected_runner].iloc[0]
+                
+                with st.form("edit_form"):
+                    st.write(f"Editing: **{selected_runner}**")
+                    new_values = {}
+                    
+                    # Create a number input for every segment
+                    # We start looping from SEGMENT definitions to keep order
+                    for seg_name in SEGMENTS.values():
+                        current_val = int(runner_row[seg_name])
+                        new_values[seg_name] = st.number_input(seg_name, value=current_val, min_value=0)
                         
-                        # Update Segment
-                        seg_col = df.columns.get_loc(segment) + 1
-                        val = df.loc[df['name'] == runner, segment].values[0]
-                        sheet.update_cell(row_idx, seg_col, int(val) + 1)
+                    if st.form_submit_button("Save Changes"):
+                        # Find Row Index
+                        row_idx = df_edit[df_edit['name'] == selected_runner].index[0] + 2
                         
-                        # Update Total
-                        tot_col = df.columns.get_loc("total_count") + 1
-                        tot = df.loc[df['name'] == runner, "total_count"].values[0]
-                        sheet.update_cell(row_idx, tot_col, int(tot) + 1)
+                        # Update every column
+                        for seg_name, val in new_values.items():
+                            col_idx = df_edit.columns.get_loc(seg_name) + 1
+                            sheet.update_cell(row_idx, col_idx, val)
+                            
+                        # Recalculate Total
+                        new_total = sum(new_values.values())
+                        total_col = df_edit.columns.get_loc("total_count") + 1
+                        sheet.update_cell(row_idx, total_col, new_total)
                         
-                        st.toast(f"Added to {runner}")
-                        time.sleep(1)
-                        st.rerun()
-                with col2:
-                    if st.button("➖ Remove 1"):
-                        row_idx = df[df['name'] == runner].index[0] + 2
-                        
-                        # Update Segment
-                        seg_col = df.columns.get_loc(segment) + 1
-                        val = df.loc[df['name'] == runner, segment].values[0]
-                        sheet.update_cell(row_idx, seg_col, max(0, int(val) - 1))
-                        
-                        # Update Total
-                        tot_col = df.columns.get_loc("total_count") + 1
-                        tot = df.loc[df['name'] == runner, "total_count"].values[0]
-                        sheet.update_cell(row_idx, tot_col, max(0, int(tot) - 1))
-                        
-                        st.toast(f"Removed from {runner}")
+                        st.success("Updated!")
                         time.sleep(1)
                         st.rerun()
 
 # --- DISPLAY LEADERBOARDS ---
-data = sheet.get_all_records()
-
+# data was fetched at the top
 if data:
-    df = pd.DataFrame(data)
+    df_disp = pd.DataFrame(data)
     
-    # Check if we have data to show
-    if 'total_count' in df.columns:
-        # Create Tabs
-        tab_names = ["🏆 Overall"] + list(SEGMENTS.values())
-        tabs = st.tabs(tab_names)
+    if list(SEGMENTS.values())[0] in df_disp.columns:
+        # Create Tabs for Segments ONLY (No Overall)
+        tabs = st.tabs(list(SEGMENTS.values()))
         
-        # 1. Overall
-        with tabs[0]:
-            leaderboard = df[['name', 'total_count']].sort_values(by='total_count', ascending=False).reset_index(drop=True)
-            st.dataframe(
-                leaderboard, 
-                column_config={
-                    "name": "Runner", 
-                    "total_count": st.column_config.NumberColumn("Total Efforts", format="%d ⚡")
-                },
-                use_container_width=True,
-                hide_index=True
-            )
-            
-        # 2. Segment Tabs
         for i, seg_name in enumerate(SEGMENTS.values()):
-            with tabs[i + 1]:
-                if seg_name in df.columns:
-                    # Sort and filter for this segment
-                    seg_df = df[['name', seg_name]].sort_values(by=seg_name, ascending=False).reset_index(drop=True)
-                    # Optional: Filter out 0s if you want a cleaner view
-                    # seg_df = seg_df[seg_df[seg_name] > 0] 
-                    
+            with tabs[i]:
+                # Filter: Show only runners with > 0 efforts
+                seg_df = df_disp[['name', seg_name]].sort_values(by=seg_name, ascending=False).reset_index(drop=True)
+                seg_df = seg_df[seg_df[seg_name] > 0] 
+                
+                if not seg_df.empty:
+                    # Highlight Top 1
                     st.dataframe(
                         seg_df,
                         column_config={
@@ -299,6 +286,8 @@ if data:
                         use_container_width=True,
                         hide_index=True
                     )
+                else:
+                    st.caption("No efforts recorded for this segment yet.")
     else:
         st.info("Database empty. Waiting for runners.")
 else:

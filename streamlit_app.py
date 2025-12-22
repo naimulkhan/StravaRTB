@@ -5,7 +5,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import time
-
+import random
 # --- CONFIGURATION ---
 CHALLENGE_START_DATE = datetime(2025, 12, 18) # Set to before your runs
 

@@ -7,17 +7,17 @@ from datetime import datetime
 import time
 
 # --- CONFIGURATION ---
-CHALLENGE_START_DATE = datetime(2025, 12, 1) # Set to before your runs
+CHALLENGE_START_DATE = datetime(2025, 12, 17) # Set to before your runs
 
 # UPDATE THIS: Map ID to Name
 SEGMENTS = {
-    22655740: "Hill Climb",
-    40409507: "River Sprint",
-    8223506:  "Park Loop",
-    3219147:  "Main St Dash",
-    40410183: "The Big One",
-    1705023:  "Coffee Run",
-    24820256: "Cool Down"
+    22655740: "Five Finger Hills",
+    40409507: " Lakeshore Coxwell-Leslie",
+    8223506:  "Pool to boardwalk",
+    3219147:  "Scarborough Road",
+    40410183: "Rainsford Rd",
+    1705023:  "Stairway to Heaven",
+    24820256: "Waterworks"
 }
 
 SEGMENT_IDS = list(SEGMENTS.keys()) # Helper list for checking IDs

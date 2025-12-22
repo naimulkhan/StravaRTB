@@ -306,11 +306,23 @@ if data:
                 seg_df = seg_df[seg_df[seg_name] > 0] 
                 
                 if not seg_df.empty:
+                    # Create a copy so we don't mess up the actual data
+                    display_df = seg_df.copy()
+                    
+                    # Add medals to the top 3 names
+                    # iloc[0] is 1st place, iloc[1] is 2nd, etc.
+                    if len(display_df) >= 1:
+                        display_df.iloc[0, 0] = "🥇 " + display_df.iloc[0, 0] 
+                    if len(display_df) >= 2:
+                        display_df.iloc[1, 0] = "🥈 " + display_df.iloc[1, 0]
+                    if len(display_df) >= 3:
+                        display_df.iloc[2, 0] = "🥉 " + display_df.iloc[2, 0]
+
                     st.dataframe(
-                        seg_df,
+                        display_df,
                         column_config={
                             "name": "Runner",
-                            seg_name: st.column_config.NumberColumn("Efforts", format="%d 🥇")
+                            seg_name: st.column_config.NumberColumn("Efforts", format="%d ⚡")
                         },
                         use_container_width=True,
                         hide_index=True

@@ -41,50 +41,64 @@ def exchange_code(code):
     return res.json()
 
 def initial_backfill(access_token):
-    """Fetches all runs since challenge start and counts segments immediately."""
     headers = {'Authorization': f"Bearer {access_token}"}
     
     # 1. Get runs since challenge start
     start_epoch = int(CHALLENGE_START_DATE.timestamp())
     activities_url = "https://www.strava.com/api/v3/athlete/activities"
     
-    # Fetch up to 200 items (covers ~90 days for most runners)
     params = {'after': start_epoch, 'per_page': 200}
     response = requests.get(activities_url, headers=headers, params=params)
     
+    # DEBUG: Print status
+    st.write(f"DEBUG: API Status Code: {response.status_code}")
+    
     if response.status_code != 200:
+        st.error("Failed to fetch activities.")
         return 0, start_epoch
 
     activities = response.json()
     total_count = 0
     latest_run_epoch = start_epoch
     
-    # Progress bar for the user
-    my_bar = st.progress(0, text="Analyzing your past runs...")
-    total_acts = len(activities)
+    st.write(f"DEBUG: Found {len(activities)} activities since {CHALLENGE_START_DATE}")
+
+    my_bar = st.progress(0, text="Analyzing runs...")
     
     for i, act in enumerate(activities):
-        # Update timestamp for future syncs to avoid double counting
+        # Update timestamp
         run_time = datetime.strptime(act['start_date'], "%Y-%m-%dT%H:%M:%SZ").timestamp()
         if run_time > latest_run_epoch:
             latest_run_epoch = int(run_time)
+
+        # DEBUG: Show which run we are checking
+        with st.expander(f"Checking run: {act['name']} ({act['start_date']})"):
             
-        # 2. Fetch Detailed Activity (Required to see segment efforts)
-        detail_url = f"https://www.strava.com/api/v3/activities/{act['id']}"
-        detail_res = requests.get(detail_url, headers=headers)
-        
-        if detail_res.status_code == 200:
-            efforts = detail_res.json().get('segment_efforts', [])
-            matches = [e for e in efforts if e['segment']['id'] in SEGMENT_IDS]
-            total_count += len(matches)
+            detail_url = f"https://www.strava.com/api/v3/activities/{act['id']}"
+            detail_res = requests.get(detail_url, headers=headers)
             
-        # Update progress bar
-        if total_acts > 0:
-            my_bar.progress((i + 1) / total_acts)
+            if detail_res.status_code == 200:
+                efforts = detail_res.json().get('segment_efforts', [])
+                
+                # LIST ALL SEGMENTS FOUND
+                found_ids = [e['segment']['id'] for e in efforts]
+                st.write(f"Found {len(efforts)} total segments on this run.")
+                st.write(f"IDs found: {found_ids}")
+                
+                # Check matches
+                matches = [e for e in efforts if e['segment']['id'] in SEGMENT_IDS]
+                if matches:
+                    st.success(f"✅ MATCH! Found {len(matches)} target segments!")
+                    total_count += len(matches)
+                else:
+                    st.warning("❌ No target segments matched in this run.")
+            else:
+                st.error("Could not fetch details for this run.")
+
+        my_bar.progress((i + 1) / len(activities))
         
     my_bar.empty()
     return total_count, latest_run_epoch
-
 # --- UI ---
 st.title("🏃 Segment Challenge Leaderboard")
 

@@ -343,4 +343,4 @@ else:
     st.info("No runners yet.")
 
 st.divider()
-st.caption(f"Last system update: {datetime.now().strftime('%H:%M UTC')}")
+st.caption(f"Last system update: {pd.Timestamp.now('America/Toronto').strftime('%H:%M ET')}")

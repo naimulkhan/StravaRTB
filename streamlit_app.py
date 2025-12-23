@@ -6,8 +6,9 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import time
 import random
+
 # --- CONFIGURATION ---
-CHALLENGE_START_DATE = datetime(2025, 12, 18) # Set to before your runs
+CHALLENGE_START_DATE = datetime(2025, 12, 18) 
 
 # UPDATE THIS: Map ID to Name
 SEGMENTS = {
@@ -16,25 +17,50 @@ SEGMENTS = {
     8223506:  "Pool to boardwalk",
     3219147:  "Scarborough Road",
     40410183: "Rainsford Rd",
-    1705023:  "Stairway to Heaven",
+    1705023:  "Stairway to Heavan",
     24820256: "Waterworks"
 }
 
 SEGMENT_IDS = list(SEGMENTS.keys())
 
 # --- GOOGLE SHEETS SETUP ---
-def get_sheet():
+def get_client():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
-    client = gspread.authorize(creds)
-    sheet = client.open(st.secrets["google"]["sheet_name"]).sheet1
-    return sheet
+    return gspread.authorize(creds)
+
+def get_spreadsheet():
+    client = get_client()
+    return client.open(st.secrets["google"]["sheet_name"])
+
+# Initialize connection
+sh = get_spreadsheet()
+sheet = sh.sheet1
 
 def init_db(sheet):
     """Creates headers if the sheet is empty."""
     if not sheet.row_values(1):
         headers = ["athlete_id", "name", "refresh_token", "last_synced", "total_count"] + list(SEGMENTS.values())
         sheet.append_row(headers)
+
+def update_last_edit():
+    """Saves the current Eastern Time to the Metadata tab."""
+    try:
+        ws = sh.worksheet("Metadata")
+    except:
+        ws = sh.add_worksheet(title="Metadata", rows=5, cols=2)
+    
+    # Save formatted Eastern Time
+    now_et = pd.Timestamp.now('America/Toronto').strftime('%Y-%m-%d %I:%M %p ET')
+    ws.update_acell('A1', now_et)
+
+def get_last_edit_time():
+    """Reads the timestamp from the Metadata tab."""
+    try:
+        ws = sh.worksheet("Metadata")
+        return ws.acell('A1').value
+    except:
+        return "No updates yet"
 
 # --- STRAVA API FUNCTIONS ---
 def get_new_token(refresh_token):
@@ -86,7 +112,6 @@ def fetch_efforts(access_token, start_epoch):
 # --- UI LAYOUT ---
 st.set_page_config(page_title="Run The Beaches Toronto!", page_icon="🏃")
 
-sheet = get_sheet()
 init_db(sheet)
 
 # --- HEADER & WINNER ---
@@ -164,6 +189,7 @@ with st.sidebar:
                 ] + segment_values
                 
                 sheet.append_row(new_row)
+                update_last_edit() # <--- Timestamp Update
                 st.balloons()
                 st.success("Registered!")
                 st.query_params.clear()
@@ -193,7 +219,6 @@ with st.sidebar:
                     
                     if st.form_submit_button("Add Runner"):
                         if new_name:
-                            # Add * to name to mark as manual
                             final_name = f"{new_name} *"
                             fake_id = random.randint(10000000, 99999999)
                             total = sum(new_values.values())
@@ -202,6 +227,7 @@ with st.sidebar:
                             new_row = [fake_id, final_name, "MANUAL", 0, total] + segment_vals
                             
                             sheet.append_row(new_row)
+                            update_last_edit() # <--- Timestamp Update
                             st.success(f"Added {final_name}!")
                             time.sleep(1)
                             st.rerun()
@@ -215,7 +241,6 @@ with st.sidebar:
                 
                 if not df_edit.empty:
                     runner_names = df_edit['name'].tolist()
-                    # Added key="edit_select" to ensure the dropdown itself is stable
                     selected_runner = st.selectbox("Select Runner", runner_names, key="edit_select")
                     runner_row = df_edit[df_edit['name'] == selected_runner].iloc[0]
                     
@@ -225,8 +250,7 @@ with st.sidebar:
                         for i, seg_name in enumerate(SEGMENTS.values()):
                             current_val = int(runner_row[seg_name])
                             with cols[i % 2]:
-                                # --- THE FIX IS HERE ---
-                                # We add _{selected_runner} to the key so it refreshes when you change runners
+                                # FIXED KEY: Added _{selected_runner} to allow refreshing
                                 edit_vals[seg_name] = st.number_input(
                                     seg_name, 
                                     value=current_val, 
@@ -245,6 +269,7 @@ with st.sidebar:
                             total_col = df_edit.columns.get_loc("total_count") + 1
                             sheet.update_cell(row_idx, total_col, new_total)
                             
+                            update_last_edit() # <--- Timestamp Update
                             st.success("Updated!")
                             time.sleep(1)
                             st.rerun()
@@ -280,6 +305,8 @@ with st.sidebar:
                                         current_val = row[SEGMENTS[sid]]
                                         sheet.update_cell(row_idx, col_idx, current_val + new_counts[sid])
                         time.sleep(1)
+                    
+                    update_last_edit() # <--- Timestamp Update (Once at end)
                     bar.empty()
                     st.success("Sync Complete!")
                     time.sleep(1)
@@ -295,9 +322,9 @@ with st.sidebar:
                     runner_to_del = st.selectbox("Select Runner to Delete", df_del['name'].tolist(), key="del_select")
                     
                     if st.button("Delete Runner", type="primary"):
-                        # Find Row Index
                         row_idx = df_del[df_del['name'] == runner_to_del].index[0] + 2
                         sheet.delete_rows(row_idx)
+                        update_last_edit() # <--- Timestamp Update
                         st.success(f"Deleted {runner_to_del}")
                         time.sleep(1)
                         st.rerun()
@@ -314,17 +341,12 @@ if data:
                 seg_df = seg_df[seg_df[seg_name] > 0] 
                 
                 if not seg_df.empty:
-                    # Create a copy so we don't mess up the actual data
                     display_df = seg_df.copy()
                     
-                    # Add medals to the top 3 names
-                    # iloc[0] is 1st place, iloc[1] is 2nd, etc.
-                    if len(display_df) >= 1:
-                        display_df.iloc[0, 0] = "🥇 " + display_df.iloc[0, 0] 
-                    if len(display_df) >= 2:
-                        display_df.iloc[1, 0] = "🥈 " + display_df.iloc[1, 0]
-                    if len(display_df) >= 3:
-                        display_df.iloc[2, 0] = "🥉 " + display_df.iloc[2, 0]
+                    # Medals
+                    if len(display_df) >= 1: display_df.iloc[0, 0] = "🥇 " + display_df.iloc[0, 0] 
+                    if len(display_df) >= 2: display_df.iloc[1, 0] = "🥈 " + display_df.iloc[1, 0]
+                    if len(display_df) >= 3: display_df.iloc[2, 0] = "🥉 " + display_df.iloc[2, 0]
 
                     st.dataframe(
                         display_df,
@@ -343,4 +365,4 @@ else:
     st.info("No runners yet.")
 
 st.divider()
-st.caption(f"Last system update: {pd.Timestamp.now('America/Toronto').strftime('%H:%M ET')}")
+st.caption(f"Last system update: {get_last_edit_time()}")

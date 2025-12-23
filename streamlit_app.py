@@ -10,10 +10,10 @@ import random
 # --- CONFIGURATION ---
 CHALLENGE_START_DATE = datetime(2025, 12, 18) 
 
-# UPDATE THIS: Map ID to Name
+# Map ID to Name
 SEGMENTS = {
     22655740: "Five Finger Hills",
-    40409507: " Lakeshore Coxwell-Leslie",
+    40409507: "Lakeshore Coxwell-Leslie",
     8223506:  "Pool to boardwalk",
     3219147:  "Scarborough Road",
     40410183: "Rainsford Rd",
@@ -38,10 +38,19 @@ sh = get_spreadsheet()
 sheet = sh.sheet1
 
 def init_db(sheet):
-    """Creates headers if the sheet is empty."""
-    if not sheet.row_values(1):
-        headers = ["athlete_id", "name", "refresh_token", "last_synced", "total_count"] + list(SEGMENTS.values())
-        sheet.append_row(headers)
+    """Updates headers if they don't match the current config."""
+    headers = ["athlete_id", "name", "refresh_token", "last_synced", "total_count"] + list(SEGMENTS.values())
+    
+    # Check if headers match what is in the sheet
+    try:
+        current_headers = sheet.row_values(1)
+    except:
+        current_headers = []
+
+    # If sheet is empty OR headers are old/wrong, force update Row 1
+    if not current_headers or current_headers != headers:
+        # This overwrites just the header row (Row 1) without touching data below
+        sheet.update(range_name='A1', values=[headers])
 
 def update_last_edit():
     """Saves the current Eastern Time to the Metadata tab."""
@@ -112,6 +121,7 @@ def fetch_efforts(access_token, start_epoch):
 # --- UI LAYOUT ---
 st.set_page_config(page_title="Run The Beaches Toronto!", page_icon="🏃")
 
+# Ensure headers are correct before loading data
 init_db(sheet)
 
 # --- HEADER & WINNER ---
@@ -189,7 +199,7 @@ with st.sidebar:
                 ] + segment_values
                 
                 sheet.append_row(new_row)
-                update_last_edit() # <--- Timestamp Update
+                update_last_edit() 
                 st.balloons()
                 st.success("Registered!")
                 st.query_params.clear()
@@ -227,7 +237,7 @@ with st.sidebar:
                             new_row = [fake_id, final_name, "MANUAL", 0, total] + segment_vals
                             
                             sheet.append_row(new_row)
-                            update_last_edit() # <--- Timestamp Update
+                            update_last_edit()
                             st.success(f"Added {final_name}!")
                             time.sleep(1)
                             st.rerun()
@@ -250,7 +260,6 @@ with st.sidebar:
                         for i, seg_name in enumerate(SEGMENTS.values()):
                             current_val = int(runner_row[seg_name])
                             with cols[i % 2]:
-                                # FIXED KEY: Added _{selected_runner} to allow refreshing
                                 edit_vals[seg_name] = st.number_input(
                                     seg_name, 
                                     value=current_val, 
@@ -269,7 +278,7 @@ with st.sidebar:
                             total_col = df_edit.columns.get_loc("total_count") + 1
                             sheet.update_cell(row_idx, total_col, new_total)
                             
-                            update_last_edit() # <--- Timestamp Update
+                            update_last_edit()
                             st.success("Updated!")
                             time.sleep(1)
                             st.rerun()
@@ -306,7 +315,7 @@ with st.sidebar:
                                         sheet.update_cell(row_idx, col_idx, current_val + new_counts[sid])
                         time.sleep(1)
                     
-                    update_last_edit() # <--- Timestamp Update (Once at end)
+                    update_last_edit() 
                     bar.empty()
                     st.success("Sync Complete!")
                     time.sleep(1)
@@ -324,7 +333,7 @@ with st.sidebar:
                     if st.button("Delete Runner", type="primary"):
                         row_idx = df_del[df_del['name'] == runner_to_del].index[0] + 2
                         sheet.delete_rows(row_idx)
-                        update_last_edit() # <--- Timestamp Update
+                        update_last_edit() 
                         st.success(f"Deleted {runner_to_del}")
                         time.sleep(1)
                         st.rerun()
@@ -343,7 +352,6 @@ if data:
                 if not seg_df.empty:
                     display_df = seg_df.copy()
                     
-                    # Medals
                     if len(display_df) >= 1: display_df.iloc[0, 0] = "🥇 " + display_df.iloc[0, 0] 
                     if len(display_df) >= 2: display_df.iloc[1, 0] = "🥈 " + display_df.iloc[1, 0]
                     if len(display_df) >= 3: display_df.iloc[2, 0] = "🥉 " + display_df.iloc[2, 0]

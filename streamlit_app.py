@@ -233,7 +233,7 @@ if not df.empty:
             if close_targets:
                 target_str = ", ".join(close_targets[:3])
                 if len(close_targets) > 3: target_str += f", and {len(close_targets)-3} others"
-                st.warning(f"👀 **They can hear your footsteps!** You are within striking distance (5 or less) on: **{target_str}**. Drink some coffee and go steal that glory!")
+                st.warning(f"👀 **They can hear your footsteps!** You are within striking distance (5 or less) on: **{target_str}**. Drink some coffee (or take a shot, maybe) and go steal it!")
             
             # Default encouragement if they are neither leading nor close
             if not owned_segments and not close_targets:

@@ -132,29 +132,30 @@ data = sheet.get_all_records()
 df = pd.DataFrame(data)
 
 if not df.empty:
-    # 1. Strip whitespace from column headers to ensure they match your config
+    # 1. CLEAN DATA IMMEDIATELY (Fixes charts and leaderboards)
     df.columns = df.columns.astype(str).str.strip()
+    
+    # Force all segment columns to be integers (converts "" to 0)
+    for seg_name in SEGMENTS.values():
+        if seg_name in df.columns:
+            df[seg_name] = pd.to_numeric(df[seg_name], errors='coerce').fillna(0).astype(int)
+
+    # 2. VISUALIZATION SECTION
     st.divider()
     st.header("📊 Race Analysis")
     
-    # 1. THE BOUNTY HUNTER (Personalized Targets)
+    # Strategy: Who should I chase?
     with st.expander("🎯 Strategy: Who should I chase?", expanded=True):
-        # Allow user to pick themselves
         runner_list = df['name'].tolist()
-        # Default to first person if available
         me = st.selectbox("I am...", runner_list, index=0)
-        
-        # Get my stats
         my_row = df[df['name'] == me].iloc[0]
         targets = []
         
         for seg_name in SEGMENTS.values():
             if seg_name in df.columns:
-                # Find the max effort for this segment (Current Leader)
                 current_leader_val = df[seg_name].max()
                 my_val = my_row[seg_name]
                 
-                # If I am not the leader, and the gap is close (e.g. <= 5 efforts)
                 if my_val < current_leader_val:
                     gap = current_leader_val - my_val
                     if gap <= 5:
@@ -176,18 +177,14 @@ if not df.empty:
 
     col_viz1, col_viz2 = st.columns(2)
 
-    # 2. THE GRIND HEATMAP
+    # Heatmap
     with col_viz1:
         st.subheader("🔥 Effort Heatmap")
-        # Transform wide data to long data for Altair
-        # Filter only segment columns
         seg_cols = list(SEGMENTS.values())
         valid_seg_cols = [c for c in seg_cols if c in df.columns]
         
         if valid_seg_cols:
             heat_data = df.melt(id_vars=['name'], value_vars=valid_seg_cols, var_name='Segment', value_name='Efforts')
-            
-            # Remove 0 efforts to clean up the chart
             heat_data = heat_data[heat_data['Efforts'] > 0]
 
             c = alt.Chart(heat_data).mark_rect().encode(
@@ -199,12 +196,9 @@ if not df.empty:
             
             st.altair_chart(c, use_container_width=True)
 
-    # 3. SPECIALIST VS GENERALIST
+    # Scatter Plot
     with col_viz2:
         st.subheader("🧪 Runner Archetypes")
-        
-        # Calculate unique segments run (Diversity)
-        # 1 means they ran at least once
         df['unique_segments'] = df[valid_seg_cols].gt(0).sum(axis=1)
         
         scatter = alt.Chart(df).mark_circle(size=100).encode(
@@ -218,22 +212,16 @@ if not df.empty:
         st.caption("Top Right = High Volume & High Variety. Top Left = Obsessed with one hill.")
 
     st.divider()
+
+    # 3. CALCULATE LEADERS (Data is already clean)
     segment_leaders = []
-    
     for seg_name in SEGMENTS.values():
-        # Check if column exists
         if seg_name in df.columns:
-            # 2. FORCE NUMERIC: Coerce errors (strings) to NaN, then fill with 0
-            df[seg_name] = pd.to_numeric(df[seg_name], errors='coerce').fillna(0).astype(int)
-            
-            # 3. Calculate Max (Now safe because everything is an int)
             max_val = df[seg_name].max()
-            
             if max_val > 0:
                 leaders = df[df[seg_name] == max_val]['name'].tolist()
                 segment_leaders.extend(leaders)
     
-    # 4. Determine Overall Leader
     if segment_leaders:
         win_counts = pd.Series(segment_leaders).value_counts()
         max_wins = win_counts.max()

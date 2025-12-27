@@ -150,9 +150,9 @@ if not df.empty:
         win_counts = pd.Series(segment_leaders).value_counts()
         max_wins = win_counts.max()
         champions = win_counts[win_counts == max_wins].index.tolist()
-        st.info(f"👑 **Current Leader:** {', '.join(champions)} ({max_wins} Segments Won)")
+        st.info(f"👑 **Current Legend:** {', '.join(champions)} ({max_wins} Segments Won)")
     else:
-        st.info("👑 Current Leader: None yet!")
+        st.info("👑 Current Legend: None yet!")
 
     # 3. SEGMENT LEADERBOARDS (Moved to Top)
     if list(SEGMENTS.values())[0] in df.columns:
@@ -207,7 +207,7 @@ if not df.empty:
                 strategy_data.append({
                     "Segment": seg_name,
                     "My Efforts": my_val,
-                    "Leader's Score": current_leader_val,
+                    "Legend's Score": current_leader_val,
                     "Gap to 1st": gap
                 })
         
@@ -220,7 +220,7 @@ if not df.empty:
                 strat_df,
                 column_config={
                     "Gap to 1st": st.column_config.ProgressColumn(
-                        "Gap to Leader",
+                        "Gap to Legend",
                         help="How many more runs you need to tie",
                         format="%d",
                         min_value=0,

@@ -132,15 +132,17 @@ data = sheet.get_all_records()
 df = pd.DataFrame(data)
 
 if not df.empty:
-    # 1. CLEAN DATA IMMEDIATELY (Fixes charts and leaderboards)
+    # 1. CLEAN DATA IMMEDIATELY (Crucial for everything below)
     df.columns = df.columns.astype(str).str.strip()
     
     # Force all segment columns to be integers (converts "" to 0)
     for seg_name in SEGMENTS.values():
         if seg_name in df.columns:
             df[seg_name] = pd.to_numeric(df[seg_name], errors='coerce').fillna(0).astype(int)
+
     st.divider()
-    # 3. CALCULATE LEADERS (Data is already clean)
+
+    # 2. CALCULATE & DISPLAY OVERALL LEADER
     segment_leaders = []
     for seg_name in SEGMENTS.values():
         if seg_name in df.columns:
@@ -156,14 +158,17 @@ if not df.empty:
         st.info(f"👑 **Current Leader:** {', '.join(champions)} ({max_wins} Segments Won)")
     else:
         st.info("👑 Current Leader: None yet!")
-    # 2. VISUALIZATION SECTION
+
+    # 3. VISUALIZATION SECTION
     st.divider()
     st.header("📊 Race Analysis")
     
     # Strategy: Who should I chase?
     with st.expander("🎯 Strategy: Who should I chase?", expanded=True):
         runner_list = df['name'].tolist()
+        # Default to the first runner in the list
         me = st.selectbox("I am...", runner_list, index=0)
+        
         my_row = df[df['name'] == me].iloc[0]
         targets = []
         
@@ -172,13 +177,15 @@ if not df.empty:
                 current_leader_val = df[seg_name].max()
                 my_val = my_row[seg_name]
                 
+                # If I am not the leader, check the gap
                 if my_val < current_leader_val:
                     gap = current_leader_val - my_val
-                    if gap <= 5:
+                    if gap <= 5: # Threshold for "close"
                         targets.append((seg_name, gap, current_leader_val))
         
         if targets:
             st.write(f"**{me}**, you are close to the lead on these segments:")
+            # Dynamic columns based on count
             cols = st.columns(len(targets) if len(targets) < 4 else 3)
             for i, (seg, gap, leader_val) in enumerate(targets):
                 with cols[i % 3]:
@@ -200,8 +207,9 @@ if not df.empty:
         valid_seg_cols = [c for c in seg_cols if c in df.columns]
         
         if valid_seg_cols:
+            # Transform for Heatmap
             heat_data = df.melt(id_vars=['name'], value_vars=valid_seg_cols, var_name='Segment', value_name='Efforts')
-            heat_data = heat_data[heat_data['Efforts'] > 0]
+            heat_data = heat_data[heat_data['Efforts'] > 0] # Filter out 0s for cleaner chart
 
             c = alt.Chart(heat_data).mark_rect().encode(
                 x=alt.X('Segment:N', axis=alt.Axis(labelAngle=-45)),
@@ -215,6 +223,7 @@ if not df.empty:
     # Scatter Plot
     with col_viz2:
         st.subheader("🧪 Runner Archetypes")
+        # Calculate how many unique segments they have attempted
         df['unique_segments'] = df[valid_seg_cols].gt(0).sum(axis=1)
         
         scatter = alt.Chart(df).mark_circle(size=100).encode(
@@ -229,7 +238,6 @@ if not df.empty:
 
     st.divider()
 
-    
 else:
     st.info("Starting up... No data found yet.")
 # --- SIDEBAR: JOIN & ADMIN ---

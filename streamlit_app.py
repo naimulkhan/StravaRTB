@@ -216,20 +216,28 @@ if not df.empty:
             strat_df = pd.DataFrame(strategy_data)
             strat_df = strat_df.sort_values(by="Gap to 1st", ascending=True)
             
-            # --- ADDED TEXT SUMMARY HERE ---
-            # Filter for "Close" targets (e.g., 5 efforts or less)
-            close_targets = strat_df[strat_df['Gap to 1st'] <= 5]
+            # --- UPDATED TEXT LOGIC ---
+            # 1. Check for Legends (Gap == 0)
+            owned_segments = strat_df[strat_df['Gap to 1st'] == 0]['Segment'].tolist()
             
-            if not close_targets.empty:
-                # Get the names of the top 3 easiest segments
-                target_names = close_targets['Segment'].tolist()
-                target_str = ", ".join(target_names[:3])
-                if len(target_names) > 3:
-                    target_str += f", and {len(target_names)-3} others"
-                
-                st.write(f"🔥 **{me}**, you are within striking distance (5 efforts or less) on: **{target_str}**!")
-            else:
-                st.write(f"💪 **{me}**, look at the top of the list below for your best target.")
+            # 2. Check for Close Calls (Gap between 1 and 5)
+            close_targets = strat_df[(strat_df['Gap to 1st'] > 0) & (strat_df['Gap to 1st'] <= 5)]['Segment'].tolist()
+
+            # Display "Legend" Status
+            if owned_segments:
+                seg_str = ", ".join(owned_segments[:3])
+                if len(owned_segments) > 3: seg_str += f" and {len(owned_segments)-3} others"
+                st.success(f"👑 **Bow down!** {me}, you are the **Local Legend** on: **{seg_str}**. Heavy is the head that wears the crown! 👑")
+
+            # Display "Striking Distance" Status
+            if close_targets:
+                target_str = ", ".join(close_targets[:3])
+                if len(close_targets) > 3: target_str += f", and {len(close_targets)-3} others"
+                st.warning(f"👀 **They can hear your footsteps!** You are within striking distance (5 or less) on: **{target_str}**. Drink some coffee and go steal that glory!")
+            
+            # Default encouragement if they are neither leading nor close
+            if not owned_segments and not close_targets:
+                st.info(f"💪 **{me}**, you've got some work to do. Tie your laces tight and start chipping away at the list below!")
             # -------------------------------
 
             st.dataframe(

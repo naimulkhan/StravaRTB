@@ -18,7 +18,7 @@ SEGMENTS = {
     8223506:  "Pool to boardwalk",
     3219147:  "Scarborough Road",
     40410183: "Rainsford Rd",
-    1705023:  "Stairway to Heavan",
+    1705023:  "Stairway to Heavan", 
     24820256: "Waterworks"
 }
 
@@ -42,15 +42,12 @@ def init_db(sheet):
     """Updates headers if they don't match the current config."""
     headers = ["athlete_id", "name", "refresh_token", "last_synced", "total_count"] + list(SEGMENTS.values())
     
-    # Check if headers match what is in the sheet
     try:
         current_headers = sheet.row_values(1)
     except:
         current_headers = []
 
-    # If sheet is empty OR headers are old/wrong, force update Row 1
     if not current_headers or current_headers != headers:
-        # This overwrites just the header row (Row 1) without touching data below
         sheet.update(range_name='A1', values=[headers])
 
 def update_last_edit():
@@ -60,12 +57,10 @@ def update_last_edit():
     except:
         ws = sh.add_worksheet(title="Metadata", rows=5, cols=2)
     
-    # Save formatted Eastern Time
     now_et = pd.Timestamp.now('America/Toronto').strftime('%Y-%m-%d %I:%M %p ET')
     ws.update_acell('A1', now_et)
 
 def get_last_edit_time():
-    """Reads the timestamp from the Metadata tab."""
     try:
         ws = sh.worksheet("Metadata")
         return ws.acell('A1').value
@@ -120,7 +115,7 @@ def fetch_efforts(access_token, start_epoch):
     return counts, latest_run_epoch
 
 # --- UI LAYOUT ---
-st.set_page_config(page_title="Run The Beaches Toronto!", page_icon="🏃")
+st.set_page_config(page_title="Run The Beaches Toronto!", page_icon="🏃", layout="centered")
 
 # Ensure headers are correct before loading data
 init_db(sheet)
@@ -132,17 +127,17 @@ data = sheet.get_all_records()
 df = pd.DataFrame(data)
 
 if not df.empty:
-    # 1. CLEAN DATA IMMEDIATELY (Crucial for everything below)
+    # 1. CLEAN DATA IMMEDIATELY
     df.columns = df.columns.astype(str).str.strip()
     
-    # Force all segment columns to be integers (converts "" to 0)
+    # Force all segment columns to be integers
     for seg_name in SEGMENTS.values():
         if seg_name in df.columns:
             df[seg_name] = pd.to_numeric(df[seg_name], errors='coerce').fillna(0).astype(int)
 
     st.divider()
 
-    # 2. CALCULATE & DISPLAY OVERALL LEADER
+    # 2. OVERALL LEADER
     segment_leaders = []
     for seg_name in SEGMENTS.values():
         if seg_name in df.columns:
@@ -159,50 +154,121 @@ if not df.empty:
     else:
         st.info("👑 Current Leader: None yet!")
 
-    # 3. VISUALIZATION SECTION
+    # 3. SEGMENT LEADERBOARDS (Moved to Top)
+    if list(SEGMENTS.values())[0] in df.columns:
+        tabs = st.tabs(list(SEGMENTS.values()))
+        
+        for i, seg_name in enumerate(SEGMENTS.values()):
+            with tabs[i]:
+                # Filter > 0 and sort
+                seg_df = df[['name', seg_name]].sort_values(by=seg_name, ascending=False).reset_index(drop=True)
+                seg_df = seg_df[seg_df[seg_name] > 0] 
+                
+                if not seg_df.empty:
+                    display_df = seg_df.copy()
+                    
+                    # Add Medals
+                    if len(display_df) >= 1: display_df.iloc[0, 0] = "🥇 " + display_df.iloc[0, 0] 
+                    if len(display_df) >= 2: display_df.iloc[1, 0] = "🥈 " + display_df.iloc[1, 0]
+                    if len(display_df) >= 3: display_df.iloc[2, 0] = "🥉 " + display_df.iloc[2, 0]
+
+                    st.dataframe(
+                        display_df,
+                        column_config={
+                            "name": "Runner",
+                            seg_name: st.column_config.NumberColumn("Efforts", format="%d ⚡")
+                        },
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.caption("No efforts recorded yet.")
+
+    # 4. VISUALIZATION SECTION
     st.divider()
     st.header("📊 Race Analysis")
     
-    # Strategy: Who should I chase?
-    with st.expander("🎯 Strategy: Who should I chase?", expanded=True):
+    # Strategy: "The Bounty Board" (Table View)
+    with st.expander("🎯 Strategy: The Bounty Board", expanded=False):
         runner_list = df['name'].tolist()
-        # Default to the first runner in the list
-        me = st.selectbox("I am...", runner_list, index=0)
+        me = st.selectbox("Select yourself to see gaps:", runner_list, index=0)
         
         my_row = df[df['name'] == me].iloc[0]
-        targets = []
+        strategy_data = []
         
         for seg_name in SEGMENTS.values():
             if seg_name in df.columns:
                 current_leader_val = df[seg_name].max()
-                my_val = my_row[seg_name]
+                my_val = int(my_row[seg_name])
                 
-                # If I am not the leader, check the gap
-                if my_val < current_leader_val:
-                    gap = current_leader_val - my_val
-                    if gap <= 5: # Threshold for "close"
-                        targets.append((seg_name, gap, current_leader_val))
+                # Calculate Gap
+                gap = current_leader_val - my_val
+                
+                strategy_data.append({
+                    "Segment": seg_name,
+                    "My Efforts": my_val,
+                    "Leader's Score": current_leader_val,
+                    "Gap to 1st": gap
+                })
         
-        if targets:
-            st.write(f"**{me}**, you are close to the lead on these segments:")
-            # Dynamic columns based on count
-            cols = st.columns(len(targets) if len(targets) < 4 else 3)
-            for i, (seg, gap, leader_val) in enumerate(targets):
-                with cols[i % 3]:
-                    st.metric(
-                        label=seg, 
-                        value=f"{int(my_row[seg])} efforts", 
-                        delta=f"{int(gap)} to tie 1st",
-                        delta_color="normal"
-                    )
-        else:
-            st.success("You are either leading everything or too far behind to catch up quickly! Keep pushing.")
+        if strategy_data:
+            # Create DataFrame and Sort by Gap (Smallest gap first)
+            strat_df = pd.DataFrame(strategy_data)
+            strat_df = strat_df.sort_values(by="Gap to 1st", ascending=True)
+            
+            st.dataframe(
+                strat_df,
+                column_config={
+                    "Gap to 1st": st.column_config.ProgressColumn(
+                        "Gap to Leader",
+                        help="How many more runs you need to tie",
+                        format="%d",
+                        min_value=0,
+                        max_value=int(strat_df["Gap to 1st"].max())
+                    ),
+                },
+                hide_index=True,
+                use_container_width=True
+            )
 
-    
-    st.divider()
+    col_viz1, col_viz2 = st.columns(2)
+
+    # Heatmap
+    with col_viz1:
+        st.subheader("🔥 Effort Heatmap")
+        seg_cols = list(SEGMENTS.values())
+        valid_seg_cols = [c for c in seg_cols if c in df.columns]
+        
+        if valid_seg_cols:
+            heat_data = df.melt(id_vars=['name'], value_vars=valid_seg_cols, var_name='Segment', value_name='Efforts')
+            heat_data = heat_data[heat_data['Efforts'] > 0]
+
+            c = alt.Chart(heat_data).mark_rect().encode(
+                x=alt.X('Segment:N', axis=alt.Axis(labelAngle=-45)),
+                y=alt.Y('name:N', title=None),
+                color=alt.Color('Efforts:Q', scale=alt.Scale(scheme='orangered')),
+                tooltip=['name', 'Segment', 'Efforts']
+            ).properties(height=350)
+            
+            st.altair_chart(c, use_container_width=True)
+
+    # Scatter Plot
+    with col_viz2:
+        st.subheader("🧪 Runner Types")
+        df['unique_segments'] = df[valid_seg_cols].gt(0).sum(axis=1)
+        
+        scatter = alt.Chart(df).mark_circle(size=100).encode(
+            x=alt.X('unique_segments:Q', title='Segments Attempted', scale=alt.Scale(domain=[0, len(valid_seg_cols)+1])),
+            y=alt.Y('total_count:Q', title='Total Efforts'),
+            color='name:N',
+            tooltip=['name', 'total_count', 'unique_segments']
+        ).properties(height=350).interactive()
+        
+        st.altair_chart(scatter, use_container_width=True)
 
 else:
     st.info("Starting up... No data found yet.")
+
 # --- SIDEBAR: JOIN & ADMIN ---
 with st.sidebar:
     st.image("logo.png", use_container_width=True)
@@ -393,52 +459,4 @@ with st.sidebar:
                         time.sleep(1)
                         st.rerun()
 
-# --- DISPLAY LEADERBOARDS ---
-# --- DISPLAY LEADERBOARDS ---
-if data:
-    df_disp = pd.DataFrame(data)
-    
-    # --- FIX: SANITIZE DATA BEFORE SORTING ---
-    # 1. Fix column names
-    df_disp.columns = df_disp.columns.astype(str).str.strip()
-    
-    # 2. Force all segment columns to be integers (converts "" to 0)
-    for seg_name in SEGMENTS.values():
-        if seg_name in df_disp.columns:
-            df_disp[seg_name] = pd.to_numeric(df_disp[seg_name], errors='coerce').fillna(0).astype(int)
-    # -----------------------------------------
-
-    if list(SEGMENTS.values())[0] in df_disp.columns:
-        tabs = st.tabs(list(SEGMENTS.values()))
-        
-        for i, seg_name in enumerate(SEGMENTS.values()):
-            with tabs[i]:
-                # Now sort_values will work because we forced the column to be integers above
-                seg_df = df_disp[['name', seg_name]].sort_values(by=seg_name, ascending=False).reset_index(drop=True)
-                seg_df = seg_df[seg_df[seg_name] > 0] 
-                
-                if not seg_df.empty:
-                    display_df = seg_df.copy()
-                    
-                    if len(display_df) >= 1: display_df.iloc[0, 0] = "🥇 " + display_df.iloc[0, 0] 
-                    if len(display_df) >= 2: display_df.iloc[1, 0] = "🥈 " + display_df.iloc[1, 0]
-                    if len(display_df) >= 3: display_df.iloc[2, 0] = "🥉 " + display_df.iloc[2, 0]
-
-                    st.dataframe(
-                        display_df,
-                        column_config={
-                            "name": "Runner",
-                            seg_name: st.column_config.NumberColumn("Efforts", format="%d ⚡")
-                        },
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                else:
-                    st.caption("No efforts recorded.")
-    else:
-        st.info("Database empty.")
-else:
-    st.info("No runners yet.")
-
-st.divider()
 st.caption(f"Last system update: {get_last_edit_time()}")

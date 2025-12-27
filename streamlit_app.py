@@ -6,6 +6,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import time
 import random
+import altair as alt
 
 # --- CONFIGURATION ---
 CHALLENGE_START_DATE = datetime(2025, 12, 18) 
@@ -133,7 +134,90 @@ df = pd.DataFrame(data)
 if not df.empty:
     # 1. Strip whitespace from column headers to ensure they match your config
     df.columns = df.columns.astype(str).str.strip()
+    st.divider()
+    st.header("📊 Race Analysis")
     
+    # 1. THE BOUNTY HUNTER (Personalized Targets)
+    with st.expander("🎯 Strategy: Who should I chase?", expanded=True):
+        # Allow user to pick themselves
+        runner_list = df['name'].tolist()
+        # Default to first person if available
+        me = st.selectbox("I am...", runner_list, index=0)
+        
+        # Get my stats
+        my_row = df[df['name'] == me].iloc[0]
+        targets = []
+        
+        for seg_name in SEGMENTS.values():
+            if seg_name in df.columns:
+                # Find the max effort for this segment (Current Leader)
+                current_leader_val = df[seg_name].max()
+                my_val = my_row[seg_name]
+                
+                # If I am not the leader, and the gap is close (e.g. <= 5 efforts)
+                if my_val < current_leader_val:
+                    gap = current_leader_val - my_val
+                    if gap <= 5:
+                        targets.append((seg_name, gap, current_leader_val))
+        
+        if targets:
+            st.write(f"**{me}**, you are close to the lead on these segments:")
+            cols = st.columns(len(targets) if len(targets) < 4 else 3)
+            for i, (seg, gap, leader_val) in enumerate(targets):
+                with cols[i % 3]:
+                    st.metric(
+                        label=seg, 
+                        value=f"{int(my_row[seg])} efforts", 
+                        delta=f"{int(gap)} to tie 1st",
+                        delta_color="normal"
+                    )
+        else:
+            st.success("You are either leading everything or too far behind to catch up quickly! Keep pushing.")
+
+    col_viz1, col_viz2 = st.columns(2)
+
+    # 2. THE GRIND HEATMAP
+    with col_viz1:
+        st.subheader("🔥 Effort Heatmap")
+        # Transform wide data to long data for Altair
+        # Filter only segment columns
+        seg_cols = list(SEGMENTS.values())
+        valid_seg_cols = [c for c in seg_cols if c in df.columns]
+        
+        if valid_seg_cols:
+            heat_data = df.melt(id_vars=['name'], value_vars=valid_seg_cols, var_name='Segment', value_name='Efforts')
+            
+            # Remove 0 efforts to clean up the chart
+            heat_data = heat_data[heat_data['Efforts'] > 0]
+
+            c = alt.Chart(heat_data).mark_rect().encode(
+                x=alt.X('Segment:N', axis=alt.Axis(labelAngle=-45)),
+                y=alt.Y('name:N', title=None),
+                color=alt.Color('Efforts:Q', scale=alt.Scale(scheme='orangered')),
+                tooltip=['name', 'Segment', 'Efforts']
+            ).properties(height=400)
+            
+            st.altair_chart(c, use_container_width=True)
+
+    # 3. SPECIALIST VS GENERALIST
+    with col_viz2:
+        st.subheader("🧪 Runner Archetypes")
+        
+        # Calculate unique segments run (Diversity)
+        # 1 means they ran at least once
+        df['unique_segments'] = df[valid_seg_cols].gt(0).sum(axis=1)
+        
+        scatter = alt.Chart(df).mark_circle(size=100).encode(
+            x=alt.X('unique_segments:Q', title='Different Segments Attempted', scale=alt.Scale(domain=[0, len(valid_seg_cols)+1])),
+            y=alt.Y('total_count:Q', title='Total Efforts'),
+            color='name:N',
+            tooltip=['name', 'total_count', 'unique_segments']
+        ).properties(height=400).interactive()
+        
+        st.altair_chart(scatter, use_container_width=True)
+        st.caption("Top Right = High Volume & High Variety. Top Left = Obsessed with one hill.")
+
+    st.divider()
     segment_leaders = []
     
     for seg_name in SEGMENTS.values():
@@ -395,6 +479,6 @@ if data:
         st.info("Database empty.")
 else:
     st.info("No runners yet.")
-    
+
 st.divider()
 st.caption(f"Last system update: {get_last_edit_time()}")

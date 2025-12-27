@@ -216,6 +216,22 @@ if not df.empty:
             strat_df = pd.DataFrame(strategy_data)
             strat_df = strat_df.sort_values(by="Gap to 1st", ascending=True)
             
+            # --- ADDED TEXT SUMMARY HERE ---
+            # Filter for "Close" targets (e.g., 5 efforts or less)
+            close_targets = strat_df[strat_df['Gap to 1st'] <= 5]
+            
+            if not close_targets.empty:
+                # Get the names of the top 3 easiest segments
+                target_names = close_targets['Segment'].tolist()
+                target_str = ", ".join(target_names[:3])
+                if len(target_names) > 3:
+                    target_str += f", and {len(target_names)-3} others"
+                
+                st.write(f"🔥 **{me}**, you are within striking distance (5 efforts or less) on: **{target_str}**!")
+            else:
+                st.write(f"💪 **{me}**, look at the top of the list below for your best target.")
+            # -------------------------------
+
             st.dataframe(
                 strat_df,
                 column_config={

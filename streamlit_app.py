@@ -139,7 +139,23 @@ if not df.empty:
     for seg_name in SEGMENTS.values():
         if seg_name in df.columns:
             df[seg_name] = pd.to_numeric(df[seg_name], errors='coerce').fillna(0).astype(int)
-
+    st.divider()
+    # 3. CALCULATE LEADERS (Data is already clean)
+    segment_leaders = []
+    for seg_name in SEGMENTS.values():
+        if seg_name in df.columns:
+            max_val = df[seg_name].max()
+            if max_val > 0:
+                leaders = df[df[seg_name] == max_val]['name'].tolist()
+                segment_leaders.extend(leaders)
+    
+    if segment_leaders:
+        win_counts = pd.Series(segment_leaders).value_counts()
+        max_wins = win_counts.max()
+        champions = win_counts[win_counts == max_wins].index.tolist()
+        st.info(f"👑 **Current Leader:** {', '.join(champions)} ({max_wins} Segments Won)")
+    else:
+        st.info("👑 Current Leader: None yet!")
     # 2. VISUALIZATION SECTION
     st.divider()
     st.header("📊 Race Analysis")
@@ -213,22 +229,7 @@ if not df.empty:
 
     st.divider()
 
-    # 3. CALCULATE LEADERS (Data is already clean)
-    segment_leaders = []
-    for seg_name in SEGMENTS.values():
-        if seg_name in df.columns:
-            max_val = df[seg_name].max()
-            if max_val > 0:
-                leaders = df[df[seg_name] == max_val]['name'].tolist()
-                segment_leaders.extend(leaders)
     
-    if segment_leaders:
-        win_counts = pd.Series(segment_leaders).value_counts()
-        max_wins = win_counts.max()
-        champions = win_counts[win_counts == max_wins].index.tolist()
-        st.info(f"👑 **Current Leader:** {', '.join(champions)} ({max_wins} Segments Won)")
-    else:
-        st.info("👑 Current Leader: None yet!")
 else:
     st.info("Starting up... No data found yet.")
 # --- SIDEBAR: JOIN & ADMIN ---

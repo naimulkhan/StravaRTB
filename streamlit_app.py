@@ -350,13 +350,26 @@ with st.sidebar:
                         st.rerun()
 
 # --- DISPLAY LEADERBOARDS ---
+# --- DISPLAY LEADERBOARDS ---
 if data:
     df_disp = pd.DataFrame(data)
+    
+    # --- FIX: SANITIZE DATA BEFORE SORTING ---
+    # 1. Fix column names
+    df_disp.columns = df_disp.columns.astype(str).str.strip()
+    
+    # 2. Force all segment columns to be integers (converts "" to 0)
+    for seg_name in SEGMENTS.values():
+        if seg_name in df_disp.columns:
+            df_disp[seg_name] = pd.to_numeric(df_disp[seg_name], errors='coerce').fillna(0).astype(int)
+    # -----------------------------------------
+
     if list(SEGMENTS.values())[0] in df_disp.columns:
         tabs = st.tabs(list(SEGMENTS.values()))
         
         for i, seg_name in enumerate(SEGMENTS.values()):
             with tabs[i]:
+                # Now sort_values will work because we forced the column to be integers above
                 seg_df = df_disp[['name', seg_name]].sort_values(by=seg_name, ascending=False).reset_index(drop=True)
                 seg_df = seg_df[seg_df[seg_name] > 0] 
                 
@@ -382,6 +395,6 @@ if data:
         st.info("Database empty.")
 else:
     st.info("No runners yet.")
-
+    
 st.divider()
 st.caption(f"Last system update: {get_last_edit_time()}")

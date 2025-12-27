@@ -131,26 +131,25 @@ data = sheet.get_all_records()
 df = pd.DataFrame(data)
 
 if not df.empty:
-    # 1. Fix Column Headers (Remove hidden spaces that cause mismatches)
+    # 1. Strip whitespace from column headers to ensure they match your config
     df.columns = df.columns.astype(str).str.strip()
     
     segment_leaders = []
     
-    # 2. Process Each Segment (Clean AND Calculate in one pass)
     for seg_name in SEGMENTS.values():
-        # Only process if the column actually exists
+        # Check if column exists
         if seg_name in df.columns:
-            # Force numeric (coerce errors to NaN, then fill with 0)
+            # 2. FORCE NUMERIC: Coerce errors (strings) to NaN, then fill with 0
             df[seg_name] = pd.to_numeric(df[seg_name], errors='coerce').fillna(0).astype(int)
             
-            # Now safe to calculate max
+            # 3. Calculate Max (Now safe because everything is an int)
             max_val = df[seg_name].max()
             
             if max_val > 0:
                 leaders = df[df[seg_name] == max_val]['name'].tolist()
                 segment_leaders.extend(leaders)
-
-    # 3. Count "Wins"
+    
+    # 4. Determine Overall Leader
     if segment_leaders:
         win_counts = pd.Series(segment_leaders).value_counts()
         max_wins = win_counts.max()
@@ -160,7 +159,6 @@ if not df.empty:
         st.info("👑 Current Leader: None yet!")
 else:
     st.info("Starting up... No data found yet.")
-
 # --- SIDEBAR: JOIN & ADMIN ---
 with st.sidebar:
     st.image("logo.png", use_container_width=True)

@@ -131,7 +131,13 @@ data = sheet.get_all_records()
 df = pd.DataFrame(data)
 
 if not df.empty and list(SEGMENTS.values())[0] in df.columns:
-    # 1. Identify leader for each segment
+    # CLEANUP DATA (The Fix)
+    # Ensure all segment columns are treated as numbers, not text.
+    # Convert non-numbers (like empty strings) to 0.
+    for seg_name in SEGMENTS.values():
+        if seg_name in df.columns:
+            df[seg_name] = pd.to_numeric(df[seg_name], errors='coerce').fillna(0).astype(int)
+    #  Identify leader for each segment
     segment_leaders = []
     for seg_name in SEGMENTS.values():
         max_val = df[seg_name].max()
@@ -139,7 +145,7 @@ if not df.empty and list(SEGMENTS.values())[0] in df.columns:
             leaders = df[df[seg_name] == max_val]['name'].tolist()
             segment_leaders.extend(leaders)
     
-    # 2. Count "Wins"
+    # Count "Wins"
     if segment_leaders:
         win_counts = pd.Series(segment_leaders).value_counts()
         max_wins = win_counts.max()

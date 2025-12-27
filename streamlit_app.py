@@ -130,22 +130,27 @@ st.markdown("<h1 style='text-align: center;'>🏃 Run The Beaches Toronto Segmen
 data = sheet.get_all_records()
 df = pd.DataFrame(data)
 
-if not df.empty and list(SEGMENTS.values())[0] in df.columns:
-    # CLEANUP DATA (The Fix)
-    # Ensure all segment columns are treated as numbers, not text.
-    # Convert non-numbers (like empty strings) to 0.
-    for seg_name in SEGMENTS.values():
-        if seg_name in df.columns:
-            df[seg_name] = pd.to_numeric(df[seg_name], errors='coerce').fillna(0).astype(int)
-    #  Identify leader for each segment
-    segment_leaders = []
-    for seg_name in SEGMENTS.values():
-        max_val = df[seg_name].max()
-        if max_val > 0:
-            leaders = df[df[seg_name] == max_val]['name'].tolist()
-            segment_leaders.extend(leaders)
+if not df.empty:
+    # 1. Fix Column Headers (Remove hidden spaces that cause mismatches)
+    df.columns = df.columns.astype(str).str.strip()
     
-    # Count "Wins"
+    segment_leaders = []
+    
+    # 2. Process Each Segment (Clean AND Calculate in one pass)
+    for seg_name in SEGMENTS.values():
+        # Only process if the column actually exists
+        if seg_name in df.columns:
+            # Force numeric (coerce errors to NaN, then fill with 0)
+            df[seg_name] = pd.to_numeric(df[seg_name], errors='coerce').fillna(0).astype(int)
+            
+            # Now safe to calculate max
+            max_val = df[seg_name].max()
+            
+            if max_val > 0:
+                leaders = df[df[seg_name] == max_val]['name'].tolist()
+                segment_leaders.extend(leaders)
+
+    # 3. Count "Wins"
     if segment_leaders:
         win_counts = pd.Series(segment_leaders).value_counts()
         max_wins = win_counts.max()
@@ -153,6 +158,8 @@ if not df.empty and list(SEGMENTS.values())[0] in df.columns:
         st.info(f"👑 **Current Leader:** {', '.join(champions)} ({max_wins} Segments Won)")
     else:
         st.info("👑 Current Leader: None yet!")
+else:
+    st.info("Starting up... No data found yet.")
 
 # --- SIDEBAR: JOIN & ADMIN ---
 with st.sidebar:

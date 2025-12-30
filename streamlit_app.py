@@ -18,7 +18,7 @@ SEGMENTS = {
     8223506:  "Pool to boardwalk",
     3219147:  "Scarborough Road",
     40410183: "Rainsford Rd",
-    1705023:  "Stairway to Heavan", 
+    1705023:  "Stairway to Heavan",
     24820256: "Waterworks"
 }
 
@@ -41,7 +41,6 @@ sheet = sh.sheet1
 def init_db(sheet):
     """Updates headers if they don't match the current config."""
     headers = ["athlete_id", "name", "refresh_token", "last_synced", "total_count"] + list(SEGMENTS.values())
-    
     try:
         current_headers = sheet.row_values(1)
     except:
@@ -130,7 +129,7 @@ if not df.empty:
     # 1. CLEAN DATA IMMEDIATELY
     df.columns = df.columns.astype(str).str.strip()
     
-    # Force all segment columns to be integers
+    # Force integers
     for seg_name in SEGMENTS.values():
         if seg_name in df.columns:
             df[seg_name] = pd.to_numeric(df[seg_name], errors='coerce').fillna(0).astype(int)
@@ -150,18 +149,34 @@ if not df.empty:
         win_counts = pd.Series(segment_leaders).value_counts()
         max_wins = win_counts.max()
         champions = win_counts[win_counts == max_wins].index.tolist()
-        st.info(f"👑 **Current Legend:** {', '.join(champions)} ({max_wins} Segments Won)")
+        # Clean names for display (remove *)
+        clean_champs = [c.replace(" *", "") for c in champions]
+        st.info(f"👑 **Current Leader:** {', '.join(clean_champs)} ({max_wins} Segments Won)")
     else:
-        st.info("👑 Current Legend: None yet!")
+        st.info("👑 Current Leader: None yet!")
 
-    # 3. SEGMENT LEADERBOARDS (Moved to Top)
+    # 3. SEGMENT LEADERBOARDS
     if list(SEGMENTS.values())[0] in df.columns:
         tabs = st.tabs(list(SEGMENTS.values()))
         
         for i, seg_name in enumerate(SEGMENTS.values()):
             with tabs[i]:
+                # Prepare Display DataFrame with Colors
+                # We do this BEFORE filtering/sorting so we have access to refresh_token
+                df_viz = df.copy()
+                
+                # Apply Green/Red Indicator based on connection status
+                def format_status_name(row):
+                    clean_name = row['name'].replace(" *", "")
+                    if row['refresh_token'] == "SCRAPED" or row['refresh_token'] == "MANUAL":
+                        return f"🔴 {clean_name}"
+                    else:
+                        return f"🟢 {clean_name}"
+                
+                df_viz['display_name'] = df_viz.apply(format_status_name, axis=1)
+
                 # Filter > 0 and sort
-                seg_df = df[['name', seg_name]].sort_values(by=seg_name, ascending=False).reset_index(drop=True)
+                seg_df = df_viz[['display_name', seg_name]].sort_values(by=seg_name, ascending=False).reset_index(drop=True)
                 seg_df = seg_df[seg_df[seg_name] > 0] 
                 
                 if not seg_df.empty:
@@ -175,7 +190,7 @@ if not df.empty:
                     st.dataframe(
                         display_df,
                         column_config={
-                            "name": "Runner",
+                            "display_name": "Runner",
                             seg_name: st.column_config.NumberColumn("Efforts", format="%d ⚡")
                         },
                         use_container_width=True,
@@ -188,7 +203,6 @@ if not df.empty:
     st.divider()
     st.header("📊 Race Analysis")
     
-    # Strategy: "The Bounty Board" (Table View)
     with st.expander("🎯 Strategy: The Bounty Board", expanded=False):
         runner_list = df['name'].tolist()
         me = st.selectbox("Select yourself to see gaps:", runner_list, index=0)
@@ -200,8 +214,6 @@ if not df.empty:
             if seg_name in df.columns:
                 current_leader_val = df[seg_name].max()
                 my_val = int(my_row[seg_name])
-                
-                # Calculate Gap
                 gap = current_leader_val - my_val
                 
                 strategy_data.append({
@@ -212,33 +224,25 @@ if not df.empty:
                 })
         
         if strategy_data:
-            # Create DataFrame and Sort by Gap (Smallest gap first)
             strat_df = pd.DataFrame(strategy_data)
             strat_df = strat_df.sort_values(by="Gap to 1st", ascending=True)
             
-            # --- UPDATED TEXT LOGIC ---
-            # 1. Check for Legends (Gap == 0)
+            # Text Logic
             owned_segments = strat_df[strat_df['Gap to 1st'] == 0]['Segment'].tolist()
-            
-            # 2. Check for Close Calls (Gap between 1 and 5)
             close_targets = strat_df[(strat_df['Gap to 1st'] > 0) & (strat_df['Gap to 1st'] <= 5)]['Segment'].tolist()
 
-            # Display "Legend" Status
             if owned_segments:
                 seg_str = ", ".join(owned_segments[:3])
                 if len(owned_segments) > 3: seg_str += f" and {len(owned_segments)-3} others"
                 st.success(f"👑 **Bow down!** {me}, you are the **Local Legend** on: **{seg_str}**. Heavy is the head that wears the crown! 👑")
 
-            # Display "Striking Distance" Status
             if close_targets:
                 target_str = ", ".join(close_targets[:3])
                 if len(close_targets) > 3: target_str += f", and {len(close_targets)-3} others"
-                st.warning(f"👀 **They can hear your footsteps!** You are within striking distance (5 or less) on: **{target_str}**. Drink some coffee (or take a shot, maybe) and go steal it!")
+                st.warning(f"👀 **They can hear your footsteps!** You are within striking distance (5 or less) on: **{target_str}**. Drink some coffee and go steal that glory!")
             
-            # Default encouragement if they are neither leading nor close
             if not owned_segments and not close_targets:
                 st.info(f"💪 **{me}**, you've got some work to do. Tie your laces tight and start chipping away at the list below!")
-            # -------------------------------
 
             st.dataframe(
                 strat_df,
@@ -255,7 +259,39 @@ if not df.empty:
                 use_container_width=True
             )
 
-    
+    col_viz1, col_viz2 = st.columns(2)
+
+    with col_viz1:
+        st.subheader("🔥 Effort Heatmap")
+        seg_cols = list(SEGMENTS.values())
+        valid_seg_cols = [c for c in seg_cols if c in df.columns]
+        
+        if valid_seg_cols:
+            heat_data = df.melt(id_vars=['name'], value_vars=valid_seg_cols, var_name='Segment', value_name='Efforts')
+            heat_data = heat_data[heat_data['Efforts'] > 0]
+
+            c = alt.Chart(heat_data).mark_rect().encode(
+                x=alt.X('Segment:N', axis=alt.Axis(labelAngle=-45)),
+                y=alt.Y('name:N', title=None),
+                color=alt.Color('Efforts:Q', scale=alt.Scale(scheme='orangered')),
+                tooltip=['name', 'Segment', 'Efforts']
+            ).properties(height=350)
+            
+            st.altair_chart(c, use_container_width=True)
+
+    with col_viz2:
+        st.subheader("🧪 Runner Types")
+        df['unique_segments'] = df[valid_seg_cols].gt(0).sum(axis=1)
+        
+        scatter = alt.Chart(df).mark_circle(size=100).encode(
+            x=alt.X('unique_segments:Q', title='Segments Attempted', scale=alt.Scale(domain=[0, len(valid_seg_cols)+1])),
+            y=alt.Y('total_count:Q', title='Total Efforts'),
+            color='name:N',
+            tooltip=['name', 'total_count', 'unique_segments']
+        ).properties(height=350).interactive()
+        
+        st.altair_chart(scatter, use_container_width=True)
+
 else:
     st.info("Starting up... No data found yet.")
 
@@ -283,17 +319,40 @@ with st.sidebar:
         
         if "access_token" in data_json:
             ath = data_json['athlete']
+            new_full_name = f"{ath['firstname']} {ath['lastname']}"
+            
             records = sheet.get_all_records()
             df_auth = pd.DataFrame(records)
             
-            is_registered = False
+            # --- 1. DEDUPLICATION LOGIC ---
+            # Check if this user exists via ID (already connected)
+            is_already_connected = False
             if not df_auth.empty and 'athlete_id' in df_auth.columns:
                  if ath['id'] in df_auth['athlete_id'].values:
-                     is_registered = True
+                     is_already_connected = True
             
-            if is_registered:
-                st.warning("You are already registered!")
+            if is_already_connected:
+                st.warning("You are already connected!")
             else:
+                # Check for "Scraped" version of this user
+                if not df_auth.empty:
+                    # Clean names in DB (remove " *")
+                    df_auth['clean_name'] = df_auth['name'].astype(str).str.replace(" *", "").str.strip()
+                    
+                    # Find matching name that IS scraped
+                    scraped_match = df_auth[
+                        (df_auth['clean_name'] == new_full_name) & 
+                        (df_auth['refresh_token'] == 'SCRAPED')
+                    ]
+                    
+                    if not scraped_match.empty:
+                        # Found a scraped duplicate! Delete it.
+                        row_to_delete = scraped_match.index[0] + 2 # +2 for 1-based index and header
+                        sheet.delete_rows(row_to_delete)
+                        st.caption(f"Upgraded {new_full_name} from Scraped to Connected! 🟢")
+                        time.sleep(1) # Let sheet update
+
+                # Proceed to Register
                 st.info("Scanning history... please wait.")
                 start_epoch = int(CHALLENGE_START_DATE.timestamp())
                 counts, last_epoch = fetch_efforts(data_json['access_token'], start_epoch)
@@ -303,7 +362,7 @@ with st.sidebar:
                 
                 new_row = [
                     ath['id'], 
-                    f"{ath['firstname']} {ath['lastname']}", 
+                    new_full_name, # Name without *
                     data_json['refresh_token'], 
                     last_epoch,
                     total
@@ -312,7 +371,7 @@ with st.sidebar:
                 sheet.append_row(new_row)
                 update_last_edit() 
                 st.balloons()
-                st.success("Registered!")
+                st.success("Registered! You are now Connected 🟢")
                 st.query_params.clear()
 
     # --- ADMIN SECTION ---
@@ -402,8 +461,8 @@ with st.sidebar:
                     bar = st.progress(0, text="Syncing...")
                     
                     for i, row in enumerate(records):
-                        # SKIP MANUAL USERS
-                        if row['refresh_token'] == "MANUAL":
+                        # SKIP MANUAL USERS AND SCRAPED USERS
+                        if row['refresh_token'] == "MANUAL" or row['refresh_token'] == "SCRAPED":
                             continue
 
                         bar.progress((i) / len(records), text=f"Syncing {row['name']}...")

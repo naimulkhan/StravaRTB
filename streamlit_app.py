@@ -84,34 +84,31 @@ def get_new_token(refresh_token):
 
 def fetch_activities_incremental(access_token, start_epoch, runner_name):
     """
-    Fetches ONLY new activities since 'start_epoch'.
-    Includes optimization to skip non-run activities before fetching details.
+    Fetches new activities. 
+    Only adds to Feed if the run actually contained a Challenge Segment.
     """
     headers = {'Authorization': f"Bearer {access_token}"}
     activities_url = "https://www.strava.com/api/v3/athlete/activities"
     
-    counts = {seg_id: 0 for seg_id in SEGMENT_IDS}
+    total_counts = {seg_id: 0 for seg_id in SEGMENT_IDS}
     feed_items = [] 
     
-    # Track the latest run we see in this batch to update the DB timestamp
     current_max_epoch = start_epoch 
 
     params = {'after': start_epoch, 'per_page': 50}
     response = requests.get(activities_url, headers=headers, params=params)
     
     if response.status_code != 200:
-        return counts, current_max_epoch, feed_items
+        return total_counts, current_max_epoch, feed_items
 
     activities = response.json()
     if not activities:
-        return counts, current_max_epoch, feed_items
+        return total_counts, current_max_epoch, feed_items
     
     for act in activities:
-        # --- OPTIMIZATION: Check type BEFORE details to save API calls ---
-        # Skip swims, rides, yogas etc.
+        # Optimization: Skip non-runs immediately
         if act.get('type') not in ['Run', 'Walk', 'Hike']:
             continue
-        # -----------------------------------------------------------------
 
         run_ts = datetime.strptime(act['start_date'], "%Y-%m-%dT%H:%M:%SZ").timestamp()
         
@@ -125,24 +122,28 @@ def fetch_activities_incremental(access_token, start_epoch, runner_name):
         if detail_res.status_code == 200:
             data = detail_res.json()
             
-            # Count Segments
+            # Count segments for THIS specific run
+            run_segment_matches = 0
             efforts = data.get('segment_efforts', [])
+            
             for effort in efforts:
                 sid = effort['segment']['id']
-                if sid in counts:
-                    counts[sid] += 1
+                if sid in total_counts:
+                    total_counts[sid] += 1
+                    run_segment_matches += 1
             
-            # Feed Data
-            feed_items.append([
-                runner_name,
-                act['start_date_local'], 
-                data.get('name', 'Run'),
-                data.get('description', ''),
-                round(data.get('distance', 0) / 1000, 2),
-                data.get('kudos_count', 0)
-            ])
+            # FIX: Only add to Feed if they actually ran a challenge segment
+            if run_segment_matches > 0:
+                feed_items.append([
+                    runner_name,
+                    act['start_date_local'], 
+                    data.get('name', 'Run'),
+                    data.get('description', ''),
+                    round(data.get('distance', 0) / 1000, 2),
+                    data.get('kudos_count', 0)
+                ])
                     
-    return counts, current_max_epoch, feed_items
+    return total_counts, current_max_epoch, feed_items
 
 # --- UI LAYOUT ---
 st.set_page_config(page_title="Run The Beaches Toronto!", page_icon="🏃", layout="wide") 
@@ -174,12 +175,10 @@ if not df.empty:
             
             st.caption("🔥 Fresh off the press")
             
-            # --- GENERATE HTML CARDS ---
             cards_html = ""
             for i, row in df_feed.iterrows():
                 desc = str(row['Description'])
                 if desc == "nan" or desc == "": desc = "No comments."
-                # Escape HTML characters to prevent breaking layout
                 desc = desc.replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
                 
                 date_str = row['Timestamp_Obj'].strftime('%b %d')
@@ -199,7 +198,6 @@ if not df.empty:
                 </div>
                 """
             
-            # --- INJECT CSS & HTML ---
             st.markdown(f"""
             <style>
                 .scroll-container {{
@@ -567,12 +565,9 @@ with st.sidebar:
                             clean_name = row['name'].replace(" *", "")
                             
                             # --- HYBRID SYNC LOGIC ---
-                            # Check when they were last synced
                             last_sync_ts = row.get('last_synced', 0)
-                            
-                            # If it's 0 (new) or very old (older than challenge start), use Challenge Start
-                            # Otherwise use their last sync time to save API calls
                             start_ts = int(CHALLENGE_START_DATE.timestamp())
+                            
                             if last_sync_ts and int(last_sync_ts) > start_ts:
                                 fetch_mode = "INCREMENTAL"
                                 fetch_start = int(last_sync_ts)
@@ -580,21 +575,17 @@ with st.sidebar:
                                 fetch_mode = "FULL"
                                 fetch_start = start_ts
 
-                            # FETCH ACTIVITIES
                             new_counts, new_epoch, new_feed = fetch_activities_incremental(new_token, fetch_start, clean_name)
                             
-                            # Deduplicate Feed Items
                             for item in new_feed:
                                 key = (item[0], item[1])
                                 if key not in existing_keys:
                                     all_new_feed_items.append(item)
                                     existing_keys.add(key)
                             
-                            # UPDATE DATABASE
                             row_idx = i + 2
                             sheet.update_cell(row_idx, 4, new_epoch)
                             
-                            # If FULL scan, overwrite. If INCREMENTAL, add.
                             current_total = row['total_count'] if fetch_mode == "INCREMENTAL" else 0
                             new_total_val = current_total + sum(new_counts.values())
                             sheet.update_cell(row_idx, 5, new_total_val)
@@ -606,7 +597,6 @@ with st.sidebar:
                                 
                         time.sleep(1)
                     
-                    # Batch upload new feed items if any
                     if all_new_feed_items:
                         try:
                             fw = sh.worksheet("ActivityFeed")

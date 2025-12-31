@@ -39,7 +39,6 @@ sheet = sh.sheet1
 
 def init_db(spreadsheet_obj):
     """Updates headers and ensures ActivityFeed tab exists."""
-    # 1. Main Sheet Headers
     headers = ["athlete_id", "name", "refresh_token", "last_synced", "total_count"] + list(SEGMENTS.values())
     main_ws = spreadsheet_obj.sheet1
     try:
@@ -50,7 +49,6 @@ def init_db(spreadsheet_obj):
     if not current_headers or current_headers != headers:
         main_ws.update(range_name='A1', values=[headers])
 
-    # 2. Activity Feed Sheet
     try:
         spreadsheet_obj.worksheet("ActivityFeed")
     except:
@@ -62,7 +60,6 @@ def update_last_edit():
         ws = sh.worksheet("Metadata")
     except:
         ws = sh.add_worksheet(title="Metadata", rows=5, cols=2)
-    
     now_et = pd.Timestamp.now('America/Toronto').strftime('%Y-%m-%d %I:%M %p ET')
     ws.update_acell('A1', now_et)
 
@@ -91,22 +88,26 @@ def fetch_efforts(access_token, start_epoch, runner_name):
     
     counts = {seg_id: 0 for seg_id in SEGMENT_IDS}
     feed_items = [] 
-    latest_run_epoch = start_epoch
+    
+    # 1. FIXED LOGIC: Separate the threshold from the tracker
+    current_max_epoch = start_epoch 
 
     params = {'after': start_epoch, 'per_page': 50}
     response = requests.get(activities_url, headers=headers, params=params)
     
     if response.status_code != 200:
-        return counts, latest_run_epoch, feed_items
+        return counts, current_max_epoch, feed_items
 
     activities = response.json()
     if not activities:
-        return counts, latest_run_epoch, feed_items
+        return counts, current_max_epoch, feed_items
     
     for act in activities:
         run_ts = datetime.strptime(act['start_date'], "%Y-%m-%dT%H:%M:%SZ").timestamp()
-        if run_ts > latest_run_epoch:
-            latest_run_epoch = int(run_ts)
+        
+        # Track the absolute newest run seen in this batch to update DB later
+        if run_ts > current_max_epoch:
+            current_max_epoch = int(run_ts)
             
         time.sleep(0.5) 
         detail_url = f"https://www.strava.com/api/v3/activities/{act['id']}"
@@ -133,7 +134,7 @@ def fetch_efforts(access_token, start_epoch, runner_name):
                     data.get('kudos_count', 0)
                 ])
                     
-    return counts, latest_run_epoch, feed_items
+    return counts, current_max_epoch, feed_items
 
 # --- UI LAYOUT ---
 st.set_page_config(page_title="Run The Beaches Toronto!", page_icon="🏃", layout="centered")
@@ -152,39 +153,43 @@ if not df.empty:
         if seg_name in df.columns:
             df[seg_name] = pd.to_numeric(df[seg_name], errors='coerce').fillna(0).astype(int)
 
-    # 1. ACTIVITY CAROUSEL (Revised for Width and Sorting)
+    # 1. ACTIVITY CAROUSEL
     try:
         feed_ws = sh.worksheet("ActivityFeed")
         feed_data = feed_ws.get_all_records()
         df_feed = pd.DataFrame(feed_data)
         
         if not df_feed.empty:
-            # FIX: Convert timestamp string to datetime objects for correct sorting
             df_feed['Timestamp_Obj'] = pd.to_datetime(df_feed['Timestamp'])
-            
-            # Sort newest first and take top 4
-            df_feed = df_feed.sort_values(by="Timestamp_Obj", ascending=False).head(4)
+            # Sort newest first
+            df_feed = df_feed.sort_values(by="Timestamp_Obj", ascending=False).head(6)
             
             st.caption("🔥 Fresh off the press")
             
-            # FIX: Use 2 columns instead of 4 to make them wider (landscape style)
+            # Use 2 columns for a "wide card" look
             cols = st.columns(2)
             
             for i, (_, row) in enumerate(df_feed.iterrows()):
                 with cols[i % 2]:
                     with st.container(border=True):
+                        # Header
                         st.markdown(f"**{row['Runner']}**")
-                        st.write(f"_{row['Title']}_")
+                        st.caption(f"_{row['Title']}_")
                         
-                        # Show description if it exists, but truncate if too long
-                        if row['Description']:
-                            desc = row['Description']
-                            if len(desc) > 60: desc = desc[:60] + "..."
-                            st.caption(desc)
+                        # Scrollable Description Box
+                        desc_text = row['Description'] if row['Description'] else "No comments."
+                        st.markdown(
+                            f"""
+                            <div style="height: 60px; overflow-y: auto; font-size: 0.85em; color: #555; background-color: #f9f9f9; padding: 5px; border-radius: 5px; margin-bottom: 10px;">
+                                {desc_text}
+                            </div>
+                            """, 
+                            unsafe_allow_html=True
+                        )
                         
-                        st.caption(f"👍 {row['Kudos']}  •  📏 {row['Distance']} km  •  📅 {row['Timestamp_Obj'].strftime('%b %d')}")
+                        # Footer
+                        st.markdown(f"👍 {row['Kudos']}  •  📏 {row['Distance']} km  •  📅 {row['Timestamp_Obj'].strftime('%b %d')}")
     except Exception as e:
-        # st.error(e) # Uncomment for debugging
         pass
 
     st.divider()
@@ -272,8 +277,6 @@ if not df.empty:
         
         if strategy_data:
             strat_df = pd.DataFrame(strategy_data)
-            
-            # FIX: Use .sort_values(), not .sort
             strat_df = strat_df.sort_values(by="Gap to 1st", ascending=True)
             
             owned_segments = strat_df[strat_df['Gap to 1st'] == 0]['Segment'].tolist()

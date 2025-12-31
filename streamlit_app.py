@@ -277,4 +277,4 @@ if not df.empty:
         
         if strategy_data:
             strat_df = pd.DataFrame(strategy_data)
-            strat_df = strat_df.sort
+            strat_df = strat_df.sort_values(by="Gap to 1st", ascending=True)

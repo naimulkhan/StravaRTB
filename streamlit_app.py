@@ -82,10 +82,6 @@ def get_new_token(refresh_token):
         return res.json().get('access_token')
     return None
 
-def fetch_efforts(access_token, start_epoch, runner_name):
-    # This is a helper wrapper if needed, but fetch_efforts_absolute is the main one used
-    return fetch_efforts_absolute(access_token, runner_name)
-
 def fetch_efforts_absolute(access_token, runner_name):
     """
     Fetches ALL activities since Challenge Start.
@@ -110,7 +106,6 @@ def fetch_efforts_absolute(access_token, runner_name):
         return counts, current_max_epoch, feed_items
     
     for act in activities:
-        # Use UTC for logic tracking
         run_ts = datetime.strptime(act['start_date'], "%Y-%m-%dT%H:%M:%SZ").timestamp()
         
         if run_ts > current_max_epoch:
@@ -134,7 +129,7 @@ def fetch_efforts_absolute(access_token, runner_name):
             if data.get('type') in ['Run', 'Walk', 'Hike']:
                 feed_items.append([
                     runner_name,
-                    act['start_date_local'], # FIX: Use Local Time for display
+                    act['start_date_local'], # FIX: Use Local Time so dates are correct
                     data.get('name', 'Run'),
                     data.get('description', ''),
                     round(data.get('distance', 0) / 1000, 2),
@@ -144,7 +139,7 @@ def fetch_efforts_absolute(access_token, runner_name):
     return counts, current_max_epoch, feed_items
 
 # --- UI LAYOUT ---
-st.set_page_config(page_title="Run The Beaches Toronto!", page_icon="🏃", layout="wide") # Changed to wide for carousel
+st.set_page_config(page_title="Run The Beaches Toronto!", page_icon="🏃", layout="wide") 
 
 init_db(sh)
 
@@ -160,7 +155,7 @@ if not df.empty:
         if seg_name in df.columns:
             df[seg_name] = pd.to_numeric(df[seg_name], errors='coerce').fillna(0).astype(int)
 
-    # 1. ACTIVITY CAROUSEL
+    # 1. ACTIVITY CAROUSEL (CUSTOM HTML/CSS)
     try:
         feed_ws = sh.worksheet("ActivityFeed")
         feed_data = feed_ws.get_all_records()
@@ -168,46 +163,106 @@ if not df.empty:
         
         if not df_feed.empty:
             df_feed['Timestamp_Obj'] = pd.to_datetime(df_feed['Timestamp'])
-            # Sort newest first
-            df_feed = df_feed.sort_values(by="Timestamp_Obj", ascending=False).head(10) # Increased to 10
+            # Sort newest first, show top 10
+            df_feed = df_feed.sort_values(by="Timestamp_Obj", ascending=False).head(10)
             
             st.caption("🔥 Fresh off the press")
             
-            # --- CSS FOR HORIZONTAL SCROLLING ---
-            st.markdown("""
-            <style>
-            div[data-testid="column"] {
-                min_width: 300px !important;
-                flex: 0 0 auto !important;
-            }
-            div[data-testid="stHorizontalBlock"] {
-                flex-wrap: nowrap !important;
-                overflow-x: auto !important;
-                padding-bottom: 15px;
-            }
-            </style>
-            """, unsafe_allow_html=True)
-            # ------------------------------------
-
-            cols = st.columns(len(df_feed)) # One column per card
+            # --- GENERATE HTML CARDS ---
+            cards_html = ""
+            for i, row in df_feed.iterrows():
+                # Truncate description
+                desc = str(row['Description'])
+                if desc == "nan" or desc == "": desc = "No comments."
+                if len(desc) > 80: desc = desc[:80] + "..."
+                
+                date_str = row['Timestamp_Obj'].strftime('%b %d')
+                
+                cards_html += f"""
+                <div class="card">
+                    <div class="card-header">
+                        <strong>{row['Runner']}</strong>
+                        <span class="card-date">{date_str}</span>
+                    </div>
+                    <div class="card-title">{row['Title']}</div>
+                    <div class="card-body">"{desc}"</div>
+                    <div class="card-footer">
+                        <span>👍 {row['Kudos']}</span>
+                        <span>📏 {row['Distance']} km</span>
+                    </div>
+                </div>
+                """
             
-            for i, (_, row) in enumerate(df_feed.iterrows()):
-                with cols[i]:
-                    with st.container(border=True):
-                        st.markdown(f"**{row['Runner']}**")
-                        st.caption(f"_{row['Title']}_")
-                        
-                        desc_text = row['Description'] if row['Description'] else "No comments."
-                        st.markdown(
-                            f"""
-                            <div style="height: 60px; overflow-y: auto; font-size: 0.85em; color: #555; background-color: #f9f9f9; padding: 5px; border-radius: 5px; margin-bottom: 10px;">
-                                {desc_text}
-                            </div>
-                            """, 
-                            unsafe_allow_html=True
-                        )
-                        st.markdown(f"👍 {row['Kudos']}  •  📏 {row['Distance']} km  •  📅 {row['Timestamp_Obj'].strftime('%b %d')}")
+            # --- INJECT CSS & HTML ---
+            st.markdown(f"""
+            <style>
+                .scroll-container {{
+                    display: flex;
+                    overflow-x: auto;
+                    padding-bottom: 20px;
+                    padding-top: 5px;
+                    gap: 15px;
+                    scrollbar-width: thin;
+                }}
+                .card {{
+                    min-width: 280px;
+                    max-width: 280px;
+                    background-color: #262730; /* Streamlit Dark */
+                    border: 1px solid #41444C;
+                    border-radius: 10px;
+                    padding: 15px;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: space-between;
+                    box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
+                }}
+                .card-header {{
+                    display: flex;
+                    justify-content: space-between;
+                    font-size: 0.9em;
+                    color: #FAFAFA;
+                    margin-bottom: 5px;
+                }}
+                .card-date {{
+                    color: #A3A8B8;
+                    font-size: 0.8em;
+                }}
+                .card-title {{
+                    font-weight: bold;
+                    font-size: 1.1em;
+                    color: #FF4B4B; /* Streamlit Red */
+                    margin-bottom: 10px;
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                }}
+                .card-body {{
+                    font-size: 0.85em;
+                    color: #E6EAF1;
+                    background-color: #31333F;
+                    padding: 10px;
+                    border-radius: 5px;
+                    margin-bottom: 10px;
+                    height: 60px;
+                    overflow-y: auto;
+                    font-style: italic;
+                }}
+                .card-footer {{
+                    display: flex;
+                    justify-content: space-between;
+                    font-size: 0.9em;
+                    color: #FAFAFA;
+                    font-weight: bold;
+                }}
+            </style>
+            
+            <div class="scroll-container">
+                {cards_html}
+            </div>
+            """, unsafe_allow_html=True)
+
     except Exception as e:
+        # st.error(f"Feed Error: {e}") 
         pass
 
     st.divider()
@@ -506,54 +561,4 @@ with st.sidebar:
                         if new_token:
                             clean_name = row['name'].replace(" *", "")
                             
-                            # FETCH ABSOLUTE COUNTS
-                            counts, new_epoch, new_feed = fetch_efforts_absolute(new_token, clean_name)
-                            
-                            # Deduplicate Feed Items
-                            for item in new_feed:
-                                key = (item[0], item[1])
-                                if key not in existing_keys:
-                                    all_new_feed_items.append(item)
-                                    existing_keys.add(key)
-                            
-                            total_new = sum(counts.values())
-                            row_idx = i + 2
-                            sheet.update_cell(row_idx, 4, new_epoch)
-                            sheet.update_cell(row_idx, 5, total_new)
-                            
-                            for s_idx, sid in enumerate(SEGMENT_IDS):
-                                col_idx = 6 + s_idx
-                                sheet.update_cell(row_idx, col_idx, counts[sid])
-                                
-                        time.sleep(1)
-                    
-                    if all_new_feed_items:
-                        try:
-                            fw = sh.worksheet("ActivityFeed")
-                            fw.append_rows(all_new_feed_items)
-                        except: pass
-
-                    update_last_edit() 
-                    bar.empty()
-                    st.success("Sync Complete!")
-                    time.sleep(1)
-                    st.rerun()
-            
-            # 4. DELETE RUNNER
-            with tab4:
-                st.caption("⚠️ Permanently remove a runner")
-                records = sheet.get_all_records()
-                df_del = pd.DataFrame(records)
-                
-                if not df_del.empty:
-                    runner_to_del = st.selectbox("Select Runner to Delete", df_del['name'].tolist(), key="del_select")
-                    
-                    if st.button("Delete Runner", type="primary"):
-                        row_idx = df_del[df_del['name'] == runner_to_del].index[0] + 2
-                        sheet.delete_rows(row_idx)
-                        update_last_edit() 
-                        st.success(f"Deleted {runner_to_del}")
-                        time.sleep(1)
-                        st.rerun()
-
-st.caption(f"Last system update: {get_last_edit_time()}")
+                            #

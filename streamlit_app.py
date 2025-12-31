@@ -542,8 +542,16 @@ with st.sidebar:
             with tab3:
                 st.caption("Syncs only connected Strava users.")
                 if st.button("Start Sync"):
+                    # 1. READ ALL DATA INTO MEMORY ONCE
                     records = sheet.get_all_records()
+                    df_sync = pd.DataFrame(records)
                     
+                    # Convert columns to numeric for calculation
+                    numeric_cols = ["total_count", "last_synced"] + list(SEGMENTS.values())
+                    for c in numeric_cols:
+                        if c in df_sync.columns:
+                            df_sync[c] = pd.to_numeric(df_sync[c], errors='coerce').fillna(0).astype(int)
+
                     try:
                         feed_ws = sh.worksheet("ActivityFeed")
                         existing_feed = feed_ws.get_all_records()
@@ -553,12 +561,14 @@ with st.sidebar:
 
                     bar = st.progress(0, text="Syncing...")
                     all_new_feed_items = []
+                    updates_made = False
                     
-                    for i, row in enumerate(records):
+                    # 2. LOOP AND UPDATE IN MEMORY
+                    for i, row in df_sync.iterrows():
                         if row['refresh_token'] == "MANUAL" or row['refresh_token'] == "SCRAPED":
                             continue
 
-                        bar.progress((i) / len(records), text=f"Syncing {row['name']}...")
+                        bar.progress((i) / len(df_sync), text=f"Syncing {row['name']}...")
                         new_token = get_new_token(row['refresh_token'])
                         
                         if new_token:
@@ -575,7 +585,6 @@ with st.sidebar:
                                 fetch_mode = "FULL"
                                 fetch_start = start_ts
 
-                            # UNIFIED FUNCTION CALL
                             new_counts, new_epoch, new_feed = fetch_activities(new_token, fetch_start, clean_name)
                             
                             for item in new_feed:
@@ -584,20 +593,39 @@ with st.sidebar:
                                     all_new_feed_items.append(item)
                                     existing_keys.add(key)
                             
-                            row_idx = i + 2
-                            sheet.update_cell(row_idx, 4, new_epoch)
+                            # UPDATE DATAFRAME (NOT SHEET)
+                            df_sync.at[i, 'last_synced'] = new_epoch
                             
-                            current_total = row['total_count'] if fetch_mode == "INCREMENTAL" else 0
-                            new_total_val = current_total + sum(new_counts.values())
-                            sheet.update_cell(row_idx, 5, new_total_val)
+                            total_new = sum(new_counts.values())
                             
-                            for s_idx, sid in enumerate(SEGMENT_IDS):
-                                col_idx = 6 + s_idx
-                                current_seg_val = row[SEGMENTS[sid]] if fetch_mode == "INCREMENTAL" else 0
-                                sheet.update_cell(row_idx, col_idx, current_seg_val + new_counts[sid])
+                            if fetch_mode == "INCREMENTAL":
+                                df_sync.at[i, 'total_count'] += total_new
+                                for sid in SEGMENT_IDS:
+                                    sname = SEGMENTS[sid]
+                                    df_sync.at[i, sname] += new_counts[sid]
+                            else:
+                                df_sync.at[i, 'total_count'] = total_new
+                                for sid in SEGMENT_IDS:
+                                    sname = SEGMENTS[sid]
+                                    df_sync.at[i, sname] = new_counts[sid]
+                            
+                            updates_made = True
                                 
                         time.sleep(1)
                     
+                    # 3. BATCH WRITE EVERYTHING BACK ONCE
+                    if updates_made:
+                        st.caption("💾 Saving to database...")
+                        # Convert DataFrame back to list of lists for GSpread
+                        # Replace NaN with 0 or empty string to avoid JSON errors
+                        df_sync = df_sync.fillna(0)
+                        
+                        # Prepare data: Header + Rows
+                        data_to_upload = [df_sync.columns.values.tolist()] + df_sync.values.tolist()
+                        
+                        # One API call to rule them all
+                        sheet.update(range_name='A1', values=data_to_upload)
+
                     if all_new_feed_items:
                         try:
                             fw = sh.worksheet("ActivityFeed")

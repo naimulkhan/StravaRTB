@@ -34,17 +34,14 @@ def get_spreadsheet():
     return client.open(st.secrets["google"]["sheet_name"])
 
 # Initialize connection
-sh = get_spreadsheet()   # This is the FILE
-sheet = sh.sheet1        # This is the specific TAB (Leaderboard)
+sh = get_spreadsheet()
+sheet = sh.sheet1
 
 def init_db(spreadsheet_obj):
     """Updates headers and ensures ActivityFeed tab exists."""
     # 1. Main Sheet Headers
     headers = ["athlete_id", "name", "refresh_token", "last_synced", "total_count"] + list(SEGMENTS.values())
-    
-    # We use spreadsheet_obj.sheet1 here, which is correct because we passed 'sh'
     main_ws = spreadsheet_obj.sheet1
-    
     try:
         current_headers = main_ws.row_values(1)
     except:
@@ -53,17 +50,14 @@ def init_db(spreadsheet_obj):
     if not current_headers or current_headers != headers:
         main_ws.update(range_name='A1', values=[headers])
 
-    # 2. Activity Feed Sheet (The Carousel Data)
+    # 2. Activity Feed Sheet
     try:
         spreadsheet_obj.worksheet("ActivityFeed")
     except:
-        # Create it if it doesn't exist
         ws = spreadsheet_obj.add_worksheet(title="ActivityFeed", rows=1000, cols=6)
-        # Headers: Runner, Date, Title, Description, Distance, Kudos
         ws.append_row(["Runner", "Timestamp", "Title", "Description", "Distance", "Kudos"])
 
 def update_last_edit():
-    """Saves the current Eastern Time to the Metadata tab."""
     try:
         ws = sh.worksheet("Metadata")
     except:
@@ -92,12 +86,11 @@ def get_new_token(refresh_token):
     return None
 
 def fetch_efforts(access_token, start_epoch, runner_name):
-    """Fetches segments AND activity metadata for the feed."""
     headers = {'Authorization': f"Bearer {access_token}"}
     activities_url = "https://www.strava.com/api/v3/athlete/activities"
     
     counts = {seg_id: 0 for seg_id in SEGMENT_IDS}
-    feed_items = [] # Store new runs for the carousel
+    feed_items = [] 
     latest_run_epoch = start_epoch
 
     params = {'after': start_epoch, 'per_page': 50}
@@ -122,22 +115,21 @@ def fetch_efforts(access_token, start_epoch, runner_name):
         if detail_res.status_code == 200:
             data = detail_res.json()
             
-            # 1. Count Segments
+            # Count Segments
             efforts = data.get('segment_efforts', [])
             for effort in efforts:
                 sid = effort['segment']['id']
                 if sid in counts:
                     counts[sid] += 1
             
-            # 2. Extract Feed Data (Title, Description, Kudos)
-            # Only add to feed if it's a Run/Walk (exclude random swims if any)
+            # Feed Data
             if data.get('type') in ['Run', 'Walk', 'Hike']:
                 feed_items.append([
                     runner_name,
-                    act['start_date'], # ISO String
+                    act['start_date'], 
                     data.get('name', 'Run'),
-                    data.get('description', ''), # The Caption
-                    round(data.get('distance', 0) / 1000, 2), # KM
+                    data.get('description', ''),
+                    round(data.get('distance', 0) / 1000, 2),
                     data.get('kudos_count', 0)
                 ])
                     
@@ -146,54 +138,58 @@ def fetch_efforts(access_token, start_epoch, runner_name):
 # --- UI LAYOUT ---
 st.set_page_config(page_title="Run The Beaches Toronto!", page_icon="🏃", layout="centered")
 
-# Ensure headers/sheets are correct
-# FIX: Pass 'sh' (The Spreadsheet), not 'sheet' (The Worksheet)
 init_db(sh)
 
-# --- HEADER & ACTIVITY FEED ---
 st.markdown("<h1 style='text-align: center;'>🏃 Run The Beaches Toronto Segment Challenge</h1>", unsafe_allow_html=True)
 
-# 1. FETCH & CLEAN MAIN DATA
 data = sheet.get_all_records()
 df = pd.DataFrame(data)
 
 if not df.empty:
     df.columns = df.columns.astype(str).str.strip()
     
-    # Force integers for segments
     for seg_name in SEGMENTS.values():
         if seg_name in df.columns:
             df[seg_name] = pd.to_numeric(df[seg_name], errors='coerce').fillna(0).astype(int)
 
-    # 2. ACTIVITY CAROUSEL (Fresh Off The Press)
+    # 1. ACTIVITY CAROUSEL (Revised for Width and Sorting)
     try:
         feed_ws = sh.worksheet("ActivityFeed")
         feed_data = feed_ws.get_all_records()
         df_feed = pd.DataFrame(feed_data)
         
         if not df_feed.empty:
-            # Sort by Date (Newest First)
-            df_feed = df_feed.sort_values(by="Timestamp", ascending=False).head(4)
+            # FIX: Convert timestamp string to datetime objects for correct sorting
+            df_feed['Timestamp_Obj'] = pd.to_datetime(df_feed['Timestamp'])
+            
+            # Sort newest first and take top 4
+            df_feed = df_feed.sort_values(by="Timestamp_Obj", ascending=False).head(4)
             
             st.caption("🔥 Fresh off the press")
-            cols = st.columns(4)
+            
+            # FIX: Use 2 columns instead of 4 to make them wider (landscape style)
+            cols = st.columns(2)
+            
             for i, (_, row) in enumerate(df_feed.iterrows()):
-                with cols[i % 4]:
+                with cols[i % 2]:
                     with st.container(border=True):
                         st.markdown(f"**{row['Runner']}**")
-                        st.caption(f"{row['Title']}")
-                        if row['Description']:
-                            st.info(f"_{row['Description']}_")
-                        else:
-                            st.write("") # Spacer
+                        st.write(f"_{row['Title']}_")
                         
-                        st.markdown(f"👍 {row['Kudos']} | 📏 {row['Distance']}km")
-    except:
-        pass # Fail silently if feed tab is broken or empty
+                        # Show description if it exists, but truncate if too long
+                        if row['Description']:
+                            desc = row['Description']
+                            if len(desc) > 60: desc = desc[:60] + "..."
+                            st.caption(desc)
+                        
+                        st.caption(f"👍 {row['Kudos']}  •  📏 {row['Distance']} km  •  📅 {row['Timestamp_Obj'].strftime('%b %d')}")
+    except Exception as e:
+        # st.error(e) # Uncomment for debugging
+        pass
 
     st.divider()
 
-    # 3. OVERALL LEADER
+    # 2. OVERALL LEADER
     segment_leaders = []
     for seg_name in SEGMENTS.values():
         if seg_name in df.columns:
@@ -211,13 +207,12 @@ if not df.empty:
     else:
         st.info("👑 Current Leader: None yet!")
 
-    # 4. SEGMENT LEADERBOARDS
+    # 3. SEGMENT LEADERBOARDS
     if list(SEGMENTS.values())[0] in df.columns:
         tabs = st.tabs(list(SEGMENTS.values()))
         
         for i, seg_name in enumerate(SEGMENTS.values()):
             with tabs[i]:
-                # Prepare Display DataFrame with Colors
                 df_viz = df.copy()
                 
                 def format_status_name(row):
@@ -251,7 +246,7 @@ if not df.empty:
                 else:
                     st.caption("No efforts recorded yet.")
 
-    # 5. VISUALIZATION / STRATEGY
+    # 4. STRATEGY
     st.divider()
     st.header("📊 Race Analysis")
     
@@ -277,6 +272,8 @@ if not df.empty:
         
         if strategy_data:
             strat_df = pd.DataFrame(strategy_data)
+            
+            # FIX: Use .sort_values(), not .sort
             strat_df = strat_df.sort_values(by="Gap to 1st", ascending=True)
             
             owned_segments = strat_df[strat_df['Gap to 1st'] == 0]['Segment'].tolist()
@@ -364,10 +361,8 @@ with st.sidebar:
 
                 st.info("Scanning history... please wait.")
                 start_epoch = int(CHALLENGE_START_DATE.timestamp())
-                # Pass Name to function for Feed
                 counts, last_epoch, feed_items = fetch_efforts(data_json['access_token'], start_epoch, new_full_name)
                 
-                # Append to Feed if any found during initial sync
                 if feed_items:
                     try:
                         fw = sh.worksheet("ActivityFeed")
@@ -479,13 +474,10 @@ with st.sidebar:
                         
                         if new_token:
                             last_epoch = row['last_synced']
-                            # Clean name for feed (remove *)
                             clean_name = row['name'].replace(" *", "")
                             new_counts, new_epoch, new_feed = fetch_efforts(new_token, last_epoch, clean_name)
                             
-                            # Collect new feed items
                             all_new_feed_items.extend(new_feed)
-                            
                             total_new = sum(new_counts.values())
                             
                             if total_new > 0:
@@ -500,7 +492,6 @@ with st.sidebar:
                                         sheet.update_cell(row_idx, col_idx, current_val + new_counts[sid])
                         time.sleep(1)
                     
-                    # Batch upload new feed items if any
                     if all_new_feed_items:
                         try:
                             fw = sh.worksheet("ActivityFeed")

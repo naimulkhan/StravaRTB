@@ -278,3 +278,256 @@ if not df.empty:
         if strategy_data:
             strat_df = pd.DataFrame(strategy_data)
             strat_df = strat_df.sort_values(by="Gap to 1st", ascending=True)
+            
+            owned_segments = strat_df[strat_df['Gap to 1st'] == 0]['Segment'].tolist()
+            close_targets = strat_df[(strat_df['Gap to 1st'] > 0) & (strat_df['Gap to 1st'] <= 5)]['Segment'].tolist()
+
+            if owned_segments:
+                seg_str = ", ".join(owned_segments[:3])
+                if len(owned_segments) > 3: seg_str += f" and {len(owned_segments)-3} others"
+                st.success(f"👑 **Bow down!** {me}, you are the **Local Legend** on: **{seg_str}**. Heavy is the head that wears the crown! 👑")
+
+            if close_targets:
+                target_str = ", ".join(close_targets[:3])
+                if len(close_targets) > 3: target_str += f", and {len(close_targets)-3} others"
+                st.warning(f"👀 **They can hear your footsteps!** You are within striking distance (5 or less) on: **{target_str}**. Drink some coffee and go steal that glory!")
+            
+            if not owned_segments and not close_targets:
+                st.info(f"💪 **{me}**, you've got some work to do. Tie your laces tight and start chipping away at the list below!")
+
+            st.dataframe(
+                strat_df,
+                column_config={
+                    "Gap to 1st": st.column_config.ProgressColumn(
+                        "Gap to Legend",
+                        help="How many more runs you need to tie",
+                        format="%d",
+                        min_value=0,
+                        max_value=int(strat_df["Gap to 1st"].max())
+                    ),
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+
+else:
+    st.info("Starting up... No data found yet.")
+
+# --- SIDEBAR: JOIN & ADMIN ---
+with st.sidebar:
+    st.image("logo.png", use_container_width=True)
+    st.header("Join Challenge")
+    auth_url = (
+        f"https://www.strava.com/oauth/authorize?client_id={st.secrets['strava']['client_id']}"
+        f"&response_type=code&redirect_uri={st.secrets['strava']['redirect_uri']}"
+        "&approval_prompt=force&scope=activity:read_all"
+    )
+    st.link_button("Connect Strava", auth_url)
+    
+    # Handle Callback
+    if "code" in st.query_params:
+        code = st.query_params["code"]
+        res = requests.post("https://www.strava.com/oauth/token", data={
+            'client_id': st.secrets["strava"]["client_id"],
+            'client_secret': st.secrets["strava"]["client_secret"],
+            'code': code,
+            'grant_type': 'authorization_code'
+        })
+        data_json = res.json()
+        
+        if "access_token" in data_json:
+            ath = data_json['athlete']
+            new_full_name = f"{ath['firstname']} {ath['lastname']}"
+            
+            records = sheet.get_all_records()
+            df_auth = pd.DataFrame(records)
+            
+            is_already_connected = False
+            if not df_auth.empty and 'athlete_id' in df_auth.columns:
+                 if ath['id'] in df_auth['athlete_id'].values:
+                     is_already_connected = True
+            
+            if is_already_connected:
+                st.warning("You are already connected!")
+            else:
+                if not df_auth.empty:
+                    df_auth['clean_name'] = df_auth['name'].astype(str).str.replace(" *", "").str.strip()
+                    scraped_match = df_auth[
+                        (df_auth['clean_name'] == new_full_name) & 
+                        (df_auth['refresh_token'] == 'SCRAPED')
+                    ]
+                    if not scraped_match.empty:
+                        row_to_delete = scraped_match.index[0] + 2 
+                        sheet.delete_rows(row_to_delete)
+                        st.caption(f"Upgraded {new_full_name} from Scraped to Connected! 🟢")
+                        time.sleep(1)
+
+                st.info("Scanning history... please wait.")
+                start_epoch = int(CHALLENGE_START_DATE.timestamp())
+                # Pass Name to function for Feed
+                counts, last_epoch, feed_items = fetch_efforts(data_json['access_token'], start_epoch, new_full_name)
+                
+                # Append to Feed if any found during initial sync
+                if feed_items:
+                    try:
+                        fw = sh.worksheet("ActivityFeed")
+                        fw.append_rows(feed_items)
+                    except: pass
+
+                total = sum(counts.values())
+                segment_values = [counts[sid] for sid in SEGMENT_IDS]
+                
+                new_row = [
+                    ath['id'], 
+                    new_full_name,
+                    data_json['refresh_token'], 
+                    last_epoch,
+                    total
+                ] + segment_values
+                
+                sheet.append_row(new_row)
+                update_last_edit() 
+                st.balloons()
+                st.success("Registered! You are now Connected 🟢")
+                st.query_params.clear()
+
+    # --- ADMIN SECTION ---
+    st.divider()
+    with st.expander("👮 Admin Access"):
+        admin_pass = st.text_input("Password", type="password")
+        
+        if admin_pass == st.secrets["admin"]["password"]:
+            st.success("Authenticated")
+            
+            tab1, tab2, tab3, tab4 = st.tabs(["Add", "Edit", "Sync", "Delete"])
+
+            # 1. ADD NEW RUNNER
+            with tab1:
+                st.caption("Add Manual Runner (marked with *)")
+                with st.form("add_runner_form"):
+                    new_name = st.text_input("Name")
+                    new_values = {}
+                    cols = st.columns(2)
+                    for i, seg_name in enumerate(SEGMENTS.values()):
+                        with cols[i % 2]:
+                            new_values[seg_name] = st.number_input(seg_name, min_value=0, value=0, key=f"add_{seg_name}")
+                    
+                    if st.form_submit_button("Add Runner"):
+                        if new_name:
+                            final_name = f"{new_name} *"
+                            fake_id = random.randint(10000000, 99999999)
+                            total = sum(new_values.values())
+                            segment_vals = [new_values[s] for s in SEGMENTS.values()]
+                            
+                            new_row = [fake_id, final_name, "MANUAL", 0, total] + segment_vals
+                            sheet.append_row(new_row)
+                            update_last_edit()
+                            st.success(f"Added {final_name}!")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("Name is required.")
+
+            # 2. EDIT EXISTING
+            with tab2:
+                records = sheet.get_all_records()
+                df_edit = pd.DataFrame(records)
+                
+                if not df_edit.empty:
+                    runner_names = df_edit['name'].tolist()
+                    selected_runner = st.selectbox("Select Runner", runner_names, key="edit_select")
+                    runner_row = df_edit[df_edit['name'] == selected_runner].iloc[0]
+                    
+                    with st.form("edit_form"):
+                        edit_vals = {}
+                        cols = st.columns(2)
+                        for i, seg_name in enumerate(SEGMENTS.values()):
+                            current_val = int(runner_row[seg_name])
+                            with cols[i % 2]:
+                                edit_vals[seg_name] = st.number_input(seg_name, value=current_val, min_value=0, key=f"edit_{seg_name}_{selected_runner}")
+                            
+                        if st.form_submit_button("Save Changes"):
+                            row_idx = df_edit[df_edit['name'] == selected_runner].index[0] + 2
+                            
+                            for seg_name, val in edit_vals.items():
+                                col_idx = df_edit.columns.get_loc(seg_name) + 1
+                                sheet.update_cell(row_idx, col_idx, val)
+                                
+                            new_total = sum(edit_vals.values())
+                            total_col = df_edit.columns.get_loc("total_count") + 1
+                            sheet.update_cell(row_idx, total_col, new_total)
+                            
+                            update_last_edit()
+                            st.success("Updated!")
+                            time.sleep(1)
+                            st.rerun()
+
+            # 3. SYNC ALL
+            with tab3:
+                st.caption("Syncs only connected Strava users.")
+                if st.button("Start Sync"):
+                    records = sheet.get_all_records()
+                    bar = st.progress(0, text="Syncing...")
+                    all_new_feed_items = []
+                    
+                    for i, row in enumerate(records):
+                        if row['refresh_token'] == "MANUAL" or row['refresh_token'] == "SCRAPED":
+                            continue
+
+                        bar.progress((i) / len(records), text=f"Syncing {row['name']}...")
+                        new_token = get_new_token(row['refresh_token'])
+                        
+                        if new_token:
+                            last_epoch = row['last_synced']
+                            # Clean name for feed (remove *)
+                            clean_name = row['name'].replace(" *", "")
+                            new_counts, new_epoch, new_feed = fetch_efforts(new_token, last_epoch, clean_name)
+                            
+                            # Collect new feed items
+                            all_new_feed_items.extend(new_feed)
+                            
+                            total_new = sum(new_counts.values())
+                            
+                            if total_new > 0:
+                                row_idx = i + 2
+                                sheet.update_cell(row_idx, 4, new_epoch)
+                                sheet.update_cell(row_idx, 5, row['total_count'] + total_new)
+                                
+                                for s_idx, sid in enumerate(SEGMENT_IDS):
+                                    if new_counts[sid] > 0:
+                                        col_idx = 6 + s_idx
+                                        current_val = row[SEGMENTS[sid]]
+                                        sheet.update_cell(row_idx, col_idx, current_val + new_counts[sid])
+                        time.sleep(1)
+                    
+                    # Batch upload new feed items if any
+                    if all_new_feed_items:
+                        try:
+                            fw = sh.worksheet("ActivityFeed")
+                            fw.append_rows(all_new_feed_items)
+                        except: pass
+
+                    update_last_edit() 
+                    bar.empty()
+                    st.success("Sync Complete!")
+                    time.sleep(1)
+                    st.rerun()
+            
+            # 4. DELETE RUNNER
+            with tab4:
+                st.caption("⚠️ Permanently remove a runner")
+                records = sheet.get_all_records()
+                df_del = pd.DataFrame(records)
+                
+                if not df_del.empty:
+                    runner_to_del = st.selectbox("Select Runner to Delete", df_del['name'].tolist(), key="del_select")
+                    
+                    if st.button("Delete Runner", type="primary"):
+                        row_idx = df_del[df_del['name'] == runner_to_del].index[0] + 2
+                        sheet.delete_rows(row_idx)
+                        update_last_edit() 
+                        st.success(f"Deleted {runner_to_del}")
+                        time.sleep(1)
+                        st.rerun()
+
+st.caption(f"Last system update: {get_last_edit_time()}")

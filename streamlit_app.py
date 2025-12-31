@@ -82,15 +82,17 @@ def get_new_token(refresh_token):
         return res.json().get('access_token')
     return None
 
-def fetch_activities_incremental(access_token, start_epoch, runner_name):
+def fetch_activities(access_token, start_epoch, runner_name):
     """
-    Fetches new activities. 
-    Only adds to Feed if the run actually contained a Challenge Segment.
+    The Single Source of Truth Function.
+    Fetches activities since 'start_epoch'.
+    CRITICAL: Only adds to feed if a Challenge Segment was actually run.
     """
     headers = {'Authorization': f"Bearer {access_token}"}
     activities_url = "https://www.strava.com/api/v3/athlete/activities"
     
-    total_counts = {seg_id: 0 for seg_id in SEGMENT_IDS}
+    # Initialize counts for this batch
+    counts = {seg_id: 0 for seg_id in SEGMENT_IDS}
     feed_items = [] 
     
     current_max_epoch = start_epoch 
@@ -99,19 +101,20 @@ def fetch_activities_incremental(access_token, start_epoch, runner_name):
     response = requests.get(activities_url, headers=headers, params=params)
     
     if response.status_code != 200:
-        return total_counts, current_max_epoch, feed_items
+        return counts, current_max_epoch, feed_items
 
     activities = response.json()
     if not activities:
-        return total_counts, current_max_epoch, feed_items
+        return counts, current_max_epoch, feed_items
     
     for act in activities:
-        # Optimization: Skip non-runs immediately
+        # 1. Skip non-run activities immediately to save API calls
         if act.get('type') not in ['Run', 'Walk', 'Hike']:
             continue
 
         run_ts = datetime.strptime(act['start_date'], "%Y-%m-%dT%H:%M:%SZ").timestamp()
         
+        # Track the latest timestamp seen
         if run_ts > current_max_epoch:
             current_max_epoch = int(run_ts)
             
@@ -122,28 +125,28 @@ def fetch_activities_incremental(access_token, start_epoch, runner_name):
         if detail_res.status_code == 200:
             data = detail_res.json()
             
-            # Count segments for THIS specific run
-            run_segment_matches = 0
+            # 2. Check for Segments in this run
             efforts = data.get('segment_efforts', [])
+            segments_matched_in_this_run = 0
             
             for effort in efforts:
                 sid = effort['segment']['id']
-                if sid in total_counts:
-                    total_counts[sid] += 1
-                    run_segment_matches += 1
+                if sid in counts:
+                    counts[sid] += 1
+                    segments_matched_in_this_run += 1
             
-            # FIX: Only add to Feed if they actually ran a challenge segment
-            if run_segment_matches > 0:
+            # 3. ONLY add to Feed if this run matched at least 1 Challenge Segment
+            if segments_matched_in_this_run > 0:
                 feed_items.append([
                     runner_name,
-                    act['start_date_local'], 
+                    act['start_date_local'], # Use Local Time
                     data.get('name', 'Run'),
                     data.get('description', ''),
                     round(data.get('distance', 0) / 1000, 2),
                     data.get('kudos_count', 0)
                 ])
                     
-    return total_counts, current_max_epoch, feed_items
+    return counts, current_max_epoch, feed_items
 
 # --- UI LAYOUT ---
 st.set_page_config(page_title="Run The Beaches Toronto!", page_icon="🏃", layout="wide") 
@@ -439,9 +442,11 @@ with st.sidebar:
                         time.sleep(1)
 
                 st.info("Scanning history... please wait.")
+                # Always use Start Date for new connections
                 start_epoch = int(CHALLENGE_START_DATE.timestamp())
-                # First time = Full Fetch
-                counts, last_epoch, feed_items = fetch_activities_incremental(data_json['access_token'], start_epoch, new_full_name)
+                
+                # UNIFIED FUNCTION CALL (Ensures filters applied on join)
+                counts, last_epoch, feed_items = fetch_activities(data_json['access_token'], start_epoch, new_full_name)
                 
                 if feed_items:
                     try:
@@ -543,7 +548,6 @@ with st.sidebar:
                 if st.button("Start Sync"):
                     records = sheet.get_all_records()
                     
-                    # 1. Load Existing Feed for Deduplication
                     try:
                         feed_ws = sh.worksheet("ActivityFeed")
                         existing_feed = feed_ws.get_all_records()
@@ -564,7 +568,7 @@ with st.sidebar:
                         if new_token:
                             clean_name = row['name'].replace(" *", "")
                             
-                            # --- HYBRID SYNC LOGIC ---
+                            # Hybrid Sync Logic
                             last_sync_ts = row.get('last_synced', 0)
                             start_ts = int(CHALLENGE_START_DATE.timestamp())
                             
@@ -575,7 +579,8 @@ with st.sidebar:
                                 fetch_mode = "FULL"
                                 fetch_start = start_ts
 
-                            new_counts, new_epoch, new_feed = fetch_activities_incremental(new_token, fetch_start, clean_name)
+                            # UNIFIED FUNCTION CALL
+                            new_counts, new_epoch, new_feed = fetch_activities(new_token, fetch_start, clean_name)
                             
                             for item in new_feed:
                                 key = (item[0], item[1])

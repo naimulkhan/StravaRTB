@@ -83,14 +83,9 @@ def get_new_token(refresh_token):
     return None
 
 def fetch_activities(access_token, start_epoch, runner_name):
-    """
-    Fetches activities. 
-    CRITICAL: Only adds to Feed if a Challenge Segment was actually run.
-    """
     headers = {'Authorization': f"Bearer {access_token}"}
     activities_url = "https://www.strava.com/api/v3/athlete/activities"
     
-    # Initialize counts for this batch
     counts = {seg_id: 0 for seg_id in SEGMENT_IDS}
     feed_items = [] 
     
@@ -107,7 +102,6 @@ def fetch_activities(access_token, start_epoch, runner_name):
         return counts, current_max_epoch, feed_items
     
     for act in activities:
-        # 1. Skip non-run activities immediately
         if act.get('type') not in ['Run', 'Walk', 'Hike']:
             continue
 
@@ -122,7 +116,6 @@ def fetch_activities(access_token, start_epoch, runner_name):
         if detail_res.status_code == 200:
             data = detail_res.json()
             
-            # 2. Count segments for THIS specific run
             efforts = data.get('segment_efforts', [])
             segments_matched_in_this_run = 0
             
@@ -132,15 +125,18 @@ def fetch_activities(access_token, start_epoch, runner_name):
                     counts[sid] += 1
                     segments_matched_in_this_run += 1
             
-            # 3. ONLY add to Feed if this run matched at least 1 Challenge Segment
             if segments_matched_in_this_run > 0:
+                # Ensure distance is float and kudos is int
+                dist_km = round(data.get('distance', 0) / 1000, 2)
+                kudos = int(data.get('kudos_count', 0))
+                
                 feed_items.append([
-                    runner_name,
-                    act['start_date_local'], # Use Local Time
-                    data.get('name', 'Run'),
-                    data.get('description', ''),
-                    round(data.get('distance', 0) / 1000, 2),
-                    data.get('kudos_count', 0)
+                    str(runner_name),
+                    str(act['start_date_local']),
+                    str(data.get('name', 'Run')),
+                    str(data.get('description', '') or ""),
+                    dist_km,
+                    kudos
                 ])
                     
     return counts, current_max_epoch, feed_items
@@ -170,23 +166,21 @@ if not df.empty:
         
         if not df_feed.empty:
             df_feed['Timestamp_Obj'] = pd.to_datetime(df_feed['Timestamp'])
-            # Sort newest first, show top 10
             df_feed = df_feed.sort_values(by="Timestamp_Obj", ascending=False).head(10)
             
             st.caption("🔥 Fresh off the press")
             
-            # CSS for Horizontal Scroll Snap
-            st.markdown(f"""
+            st.markdown("""
             <style>
-                .scroll-container {{
+                .scroll-container {
                     display: flex;
                     overflow-x: auto;
                     padding-bottom: 20px;
                     padding-top: 5px;
                     gap: 15px;
                     scrollbar-width: thin;
-                }}
-                .card {{
+                }
+                .card {
                     min-width: 280px;
                     max-width: 280px;
                     background-color: #262730; 
@@ -197,19 +191,19 @@ if not df.empty:
                     flex-direction: column;
                     justify-content: space-between;
                     box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
-                }}
-                .card-header {{
+                }
+                .card-header {
                     display: flex;
                     justify-content: space-between;
                     font-size: 0.9em;
                     color: #FAFAFA;
                     margin-bottom: 5px;
-                }}
-                .card-date {{
+                }
+                .card-date {
                     color: #A3A8B8;
                     font-size: 0.8em;
-                }}
-                .card-title {{
+                }
+                .card-title {
                     font-weight: bold;
                     font-size: 1.1em;
                     color: #FF4B4B; 
@@ -217,8 +211,8 @@ if not df.empty:
                     white-space: nowrap;
                     overflow: hidden;
                     text-overflow: ellipsis;
-                }}
-                .card-body {{
+                }
+                .card-body {
                     font-size: 0.85em;
                     color: #E6EAF1;
                     background-color: #31333F;
@@ -228,14 +222,14 @@ if not df.empty:
                     height: 60px;
                     overflow-y: auto;
                     font-style: italic;
-                }}
-                .card-footer {{
+                }
+                .card-footer {
                     display: flex;
                     justify-content: space-between;
                     font-size: 0.9em;
                     color: #FAFAFA;
                     font-weight: bold;
-                }}
+                }
             </style>
             """, unsafe_allow_html=True)
 
@@ -539,7 +533,7 @@ with st.sidebar:
             with tab3:
                 st.caption("Syncs only connected Strava users.")
                 
-                # --- NEW FORCE RESYNC CHECKBOX ---
+                # --- CHECKBOX FOR FORCE RESYNC ---
                 force_full_sync = st.checkbox("Force Full History Resync (Check this if you cleared the feed)")
                 
                 if st.button("Start Sync"):
@@ -552,10 +546,17 @@ with st.sidebar:
                         if c in df_sync.columns:
                             df_sync[c] = pd.to_numeric(df_sync[c], errors='coerce').fillna(0).astype(int)
 
+                    # Prepare Feed Worksheet
                     try:
                         feed_ws = sh.worksheet("ActivityFeed")
-                        existing_feed = feed_ws.get_all_records()
-                        existing_keys = set((row['Runner'], row['Timestamp']) for row in existing_feed)
+                        # IF FORCE SYNC: CLEAR IT
+                        if force_full_sync:
+                            feed_ws.clear()
+                            feed_ws.append_row(["Runner", "Timestamp", "Title", "Description", "Distance", "Kudos"])
+                            existing_keys = set()
+                        else:
+                            existing_feed = feed_ws.get_all_records()
+                            existing_keys = set((row['Runner'], row['Timestamp']) for row in existing_feed)
                     except:
                         existing_keys = set()
 
@@ -574,11 +575,10 @@ with st.sidebar:
                         if new_token:
                             clean_name = row['name'].replace(" *", "")
                             
-                            # --- HYBRID SYNC LOGIC ---
+                            # Hybrid Sync Logic
                             last_sync_ts = row.get('last_synced', 0)
                             start_ts = int(CHALLENGE_START_DATE.timestamp())
                             
-                            # LOGIC: Force Full OR Standard Incremental Check
                             if force_full_sync:
                                 fetch_mode = "FULL"
                                 fetch_start = start_ts
@@ -597,7 +597,7 @@ with st.sidebar:
                                     all_new_feed_items.append(item)
                                     existing_keys.add(key)
                             
-                            # UPDATE DATAFRAME (NOT SHEET)
+                            # UPDATE DATAFRAME
                             df_sync.at[i, 'last_synced'] = new_epoch
                             
                             total_new = sum(new_counts.values())
@@ -608,7 +608,6 @@ with st.sidebar:
                                     sname = SEGMENTS[sid]
                                     df_sync.at[i, sname] += new_counts[sid]
                             else:
-                                # FULL SYNC OVERWRITES
                                 df_sync.at[i, 'total_count'] = total_new
                                 for sid in SEGMENT_IDS:
                                     sname = SEGMENTS[sid]
@@ -618,13 +617,10 @@ with st.sidebar:
                                 
                         time.sleep(1)
                     
-                    # 3. BATCH WRITE EVERYTHING BACK ONCE
+                    # 3. BATCH WRITE BACK
                     if updates_made:
-                        # Convert DataFrame back to list of lists for GSpread
                         df_sync = df_sync.fillna(0)
                         data_to_upload = [df_sync.columns.values.tolist()] + df_sync.values.tolist()
-                        
-                        # One API call to rule them all
                         sheet.update(range_name='A1', values=data_to_upload)
 
                     if all_new_feed_items:

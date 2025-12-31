@@ -38,17 +38,26 @@ def get_spreadsheet():
 sh = get_spreadsheet()
 sheet = sh.sheet1
 
-def init_db(sheet):
-    """Updates headers if they don't match the current config."""
+def init_db(sh):
+    """Updates headers and ensures ActivityFeed tab exists."""
+    # 1. Main Sheet Headers
     headers = ["athlete_id", "name", "refresh_token", "last_synced", "total_count"] + list(SEGMENTS.values())
     try:
-        current_headers = sheet.row_values(1)
+        main_ws = sh.sheet1
+        current_headers = main_ws.row_values(1)
     except:
         current_headers = []
 
     if not current_headers or current_headers != headers:
-        sheet.update(range_name='A1', values=[headers])
+        sh.sheet1.update(range_name='A1', values=[headers])
 
+    # 2. Activity Feed Sheet
+    try:
+        sh.worksheet("ActivityFeed")
+    except:
+        ws = sh.add_worksheet(title="ActivityFeed", rows=1000, cols=6)
+        # Headers: Runner, Date, Title, Description, Distance, Kudos
+        ws.append_row(["Runner", "Timestamp", "Title", "Description", "Distance", "Kudos"])
 def update_last_edit():
     """Saves the current Eastern Time to the Metadata tab."""
     try:
@@ -78,41 +87,57 @@ def get_new_token(refresh_token):
         return res.json().get('access_token')
     return None
 
-def fetch_efforts(access_token, start_epoch):
+def fetch_efforts(access_token, start_epoch, runner_name):
+    """Fetches segments AND activity metadata for the feed."""
     headers = {'Authorization': f"Bearer {access_token}"}
     activities_url = "https://www.strava.com/api/v3/athlete/activities"
     
     counts = {seg_id: 0 for seg_id in SEGMENT_IDS}
+    feed_items = [] # Store new runs for the carousel
     latest_run_epoch = start_epoch
 
     params = {'after': start_epoch, 'per_page': 50}
     response = requests.get(activities_url, headers=headers, params=params)
     
     if response.status_code != 200:
-        return counts, latest_run_epoch
+        return counts, latest_run_epoch, feed_items
 
     activities = response.json()
     if not activities:
-        return counts, latest_run_epoch
+        return counts, latest_run_epoch, feed_items
     
     for act in activities:
-        run_time = datetime.strptime(act['start_date'], "%Y-%m-%dT%H:%M:%SZ").timestamp()
-        if run_time > latest_run_epoch:
-            latest_run_epoch = int(run_time)
+        run_ts = datetime.strptime(act['start_date'], "%Y-%m-%dT%H:%M:%SZ").timestamp()
+        if run_ts > latest_run_epoch:
+            latest_run_epoch = int(run_ts)
             
         time.sleep(0.5) 
         detail_url = f"https://www.strava.com/api/v3/activities/{act['id']}"
         detail_res = requests.get(detail_url, headers=headers)
         
         if detail_res.status_code == 200:
-            efforts = detail_res.json().get('segment_efforts', [])
+            data = detail_res.json()
+            
+            # 1. Count Segments
+            efforts = data.get('segment_efforts', [])
             for effort in efforts:
                 sid = effort['segment']['id']
                 if sid in counts:
                     counts[sid] += 1
+            
+            # 2. Extract Feed Data (Title, Description, Kudos)
+            # Only add to feed if it's a Run/Walk (exclude random swims if any)
+            if data.get('type') in ['Run', 'Walk', 'Hike']:
+                feed_items.append([
+                    runner_name,
+                    act['start_date'], # ISO String
+                    data.get('name', 'Run'),
+                    data.get('description', ''), # The Caption
+                    round(data.get('distance', 0) / 1000, 2), # KM
+                    data.get('kudos_count', 0)
+                ])
                     
-    return counts, latest_run_epoch
-
+    return counts, latest_run_epoch, feed_items
 # --- UI LAYOUT ---
 st.set_page_config(page_title="Run The Beaches Toronto!", page_icon="🏃", layout="centered")
 
@@ -133,7 +158,31 @@ if not df.empty:
     for seg_name in SEGMENTS.values():
         if seg_name in df.columns:
             df[seg_name] = pd.to_numeric(df[seg_name], errors='coerce').fillna(0).astype(int)
-
+    # 1. ACTIVITY CAROUSEL (Fresh Off The Press)
+    try:
+        feed_ws = sh.worksheet("ActivityFeed")
+        feed_data = feed_ws.get_all_records()
+        df_feed = pd.DataFrame(feed_data)
+        
+        if not df_feed.empty:
+            # Sort by Date (Newest First)
+            df_feed = df_feed.sort_values(by="Timestamp", ascending=False).head(4)
+            
+            st.caption("🔥 Fresh off the press")
+            cols = st.columns(4)
+            for i, (_, row) in enumerate(df_feed.iterrows()):
+                with cols[i % 4]:
+                    with st.container(border=True):
+                        st.markdown(f"**{row['Runner']}**")
+                        st.caption(f"{row['Title']}")
+                        if row['Description']:
+                            st.info(f"_{row['Description']}_")
+                        else:
+                            st.write("") # Spacer
+                        
+                        st.markdown(f"👍 {row['Kudos']} | 📏 {row['Distance']}km")
+    except:
+        pass # Fail silently if feed tab is broken or empty
     st.divider()
 
     # 2. OVERALL LEADER
@@ -292,8 +341,6 @@ with st.sidebar:
             records = sheet.get_all_records()
             df_auth = pd.DataFrame(records)
             
-            # --- 1. DEDUPLICATION LOGIC ---
-            # Check if this user exists via ID (already connected)
             is_already_connected = False
             if not df_auth.empty and 'athlete_id' in df_auth.columns:
                  if ath['id'] in df_auth['athlete_id'].values:
@@ -302,35 +349,36 @@ with st.sidebar:
             if is_already_connected:
                 st.warning("You are already connected!")
             else:
-                # Check for "Scraped" version of this user
                 if not df_auth.empty:
-                    # Clean names in DB (remove " *")
                     df_auth['clean_name'] = df_auth['name'].astype(str).str.replace(" *", "").str.strip()
-                    
-                    # Find matching name that IS scraped
                     scraped_match = df_auth[
                         (df_auth['clean_name'] == new_full_name) & 
                         (df_auth['refresh_token'] == 'SCRAPED')
                     ]
-                    
                     if not scraped_match.empty:
-                        # Found a scraped duplicate! Delete it.
-                        row_to_delete = scraped_match.index[0] + 2 # +2 for 1-based index and header
+                        row_to_delete = scraped_match.index[0] + 2 
                         sheet.delete_rows(row_to_delete)
                         st.caption(f"Upgraded {new_full_name} from Scraped to Connected! 🟢")
-                        time.sleep(1) # Let sheet update
+                        time.sleep(1)
 
-                # Proceed to Register
                 st.info("Scanning history... please wait.")
                 start_epoch = int(CHALLENGE_START_DATE.timestamp())
-                counts, last_epoch = fetch_efforts(data_json['access_token'], start_epoch)
+                # Pass Name to function for Feed
+                counts, last_epoch, feed_items = fetch_efforts(data_json['access_token'], start_epoch, new_full_name)
                 
+                # Append to Feed if any found during initial sync
+                if feed_items:
+                    try:
+                        fw = sh.worksheet("ActivityFeed")
+                        fw.append_rows(feed_items)
+                    except: pass
+
                 total = sum(counts.values())
                 segment_values = [counts[sid] for sid in SEGMENT_IDS]
                 
                 new_row = [
                     ath['id'], 
-                    new_full_name, # Name without *
+                    new_full_name,
                     data_json['refresh_token'], 
                     last_epoch,
                     total
@@ -350,7 +398,6 @@ with st.sidebar:
         if admin_pass == st.secrets["admin"]["password"]:
             st.success("Authenticated")
             
-            # --- ADMIN TABS ---
             tab1, tab2, tab3, tab4 = st.tabs(["Add", "Edit", "Sync", "Delete"])
 
             # 1. ADD NEW RUNNER
@@ -358,7 +405,6 @@ with st.sidebar:
                 st.caption("Add Manual Runner (marked with *)")
                 with st.form("add_runner_form"):
                     new_name = st.text_input("Name")
-                    
                     new_values = {}
                     cols = st.columns(2)
                     for i, seg_name in enumerate(SEGMENTS.values()):
@@ -373,7 +419,6 @@ with st.sidebar:
                             segment_vals = [new_values[s] for s in SEGMENTS.values()]
                             
                             new_row = [fake_id, final_name, "MANUAL", 0, total] + segment_vals
-                            
                             sheet.append_row(new_row)
                             update_last_edit()
                             st.success(f"Added {final_name}!")
@@ -398,12 +443,7 @@ with st.sidebar:
                         for i, seg_name in enumerate(SEGMENTS.values()):
                             current_val = int(runner_row[seg_name])
                             with cols[i % 2]:
-                                edit_vals[seg_name] = st.number_input(
-                                    seg_name, 
-                                    value=current_val, 
-                                    min_value=0, 
-                                    key=f"edit_{seg_name}_{selected_runner}"
-                                )
+                                edit_vals[seg_name] = st.number_input(seg_name, value=current_val, min_value=0, key=f"edit_{seg_name}_{selected_runner}")
                             
                         if st.form_submit_button("Save Changes"):
                             row_idx = df_edit[df_edit['name'] == selected_runner].index[0] + 2
@@ -427,9 +467,9 @@ with st.sidebar:
                 if st.button("Start Sync"):
                     records = sheet.get_all_records()
                     bar = st.progress(0, text="Syncing...")
+                    all_new_feed_items = []
                     
                     for i, row in enumerate(records):
-                        # SKIP MANUAL USERS AND SCRAPED USERS
                         if row['refresh_token'] == "MANUAL" or row['refresh_token'] == "SCRAPED":
                             continue
 
@@ -438,7 +478,13 @@ with st.sidebar:
                         
                         if new_token:
                             last_epoch = row['last_synced']
-                            new_counts, new_epoch = fetch_efforts(new_token, last_epoch)
+                            # Clean name for feed (remove *)
+                            clean_name = row['name'].replace(" *", "")
+                            new_counts, new_epoch, new_feed = fetch_efforts(new_token, last_epoch, clean_name)
+                            
+                            # Collect new feed items
+                            all_new_feed_items.extend(new_feed)
+                            
                             total_new = sum(new_counts.values())
                             
                             if total_new > 0:
@@ -453,6 +499,13 @@ with st.sidebar:
                                         sheet.update_cell(row_idx, col_idx, current_val + new_counts[sid])
                         time.sleep(1)
                     
+                    # Batch upload new feed items if any
+                    if all_new_feed_items:
+                        try:
+                            fw = sh.worksheet("ActivityFeed")
+                            fw.append_rows(all_new_feed_items)
+                        except: pass
+
                     update_last_edit() 
                     bar.empty()
                     st.success("Sync Complete!")

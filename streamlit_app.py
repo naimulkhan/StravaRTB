@@ -82,14 +82,22 @@ def get_new_token(refresh_token):
         return res.json().get('access_token')
     return None
 
-def fetch_efforts(access_token, start_epoch, runner_name):
+def fetch_efforts_absolute(access_token, runner_name):
+    """
+    Fetches ALL activities since Challenge Start.
+    Returns:
+    1. Absolute Counts (Total for the whole challenge)
+    2. Latest Epoch seen
+    3. List of ALL feed items (to be deduplicated later)
+    """
     headers = {'Authorization': f"Bearer {access_token}"}
     activities_url = "https://www.strava.com/api/v3/athlete/activities"
     
     counts = {seg_id: 0 for seg_id in SEGMENT_IDS}
     feed_items = [] 
     
-    # 1. FIXED LOGIC: Separate the threshold from the tracker
+    # ALWAYS start from the Challenge Start Date (Force Recalculation)
+    start_epoch = int(CHALLENGE_START_DATE.timestamp())
     current_max_epoch = start_epoch 
 
     params = {'after': start_epoch, 'per_page': 50}
@@ -105,7 +113,7 @@ def fetch_efforts(access_token, start_epoch, runner_name):
     for act in activities:
         run_ts = datetime.strptime(act['start_date'], "%Y-%m-%dT%H:%M:%SZ").timestamp()
         
-        # Track the absolute newest run seen in this batch to update DB later
+        # Track latest run time
         if run_ts > current_max_epoch:
             current_max_epoch = int(run_ts)
             
@@ -116,7 +124,7 @@ def fetch_efforts(access_token, start_epoch, runner_name):
         if detail_res.status_code == 200:
             data = detail_res.json()
             
-            # Count Segments
+            # Count Segments (Accumulate Total)
             efforts = data.get('segment_efforts', [])
             for effort in efforts:
                 sid = effort['segment']['id']
@@ -165,18 +173,14 @@ if not df.empty:
             df_feed = df_feed.sort_values(by="Timestamp_Obj", ascending=False).head(6)
             
             st.caption("🔥 Fresh off the press")
-            
-            # Use 2 columns for a "wide card" look
             cols = st.columns(2)
             
             for i, (_, row) in enumerate(df_feed.iterrows()):
                 with cols[i % 2]:
                     with st.container(border=True):
-                        # Header
                         st.markdown(f"**{row['Runner']}**")
                         st.caption(f"_{row['Title']}_")
                         
-                        # Scrollable Description Box
                         desc_text = row['Description'] if row['Description'] else "No comments."
                         st.markdown(
                             f"""
@@ -186,8 +190,6 @@ if not df.empty:
                             """, 
                             unsafe_allow_html=True
                         )
-                        
-                        # Footer
                         st.markdown(f"👍 {row['Kudos']}  •  📏 {row['Distance']} km  •  📅 {row['Timestamp_Obj'].strftime('%b %d')}")
     except Exception as e:
         pass
@@ -363,9 +365,10 @@ with st.sidebar:
                         time.sleep(1)
 
                 st.info("Scanning history... please wait.")
-                start_epoch = int(CHALLENGE_START_DATE.timestamp())
-                counts, last_epoch, feed_items = fetch_efforts(data_json['access_token'], start_epoch, new_full_name)
+                # FETCH ABSOLUTE COUNTS
+                counts, last_epoch, feed_items = fetch_efforts_absolute(data_json['access_token'], new_full_name)
                 
+                # Append to Feed
                 if feed_items:
                     try:
                         fw = sh.worksheet("ActivityFeed")
@@ -465,6 +468,16 @@ with st.sidebar:
                 st.caption("Syncs only connected Strava users.")
                 if st.button("Start Sync"):
                     records = sheet.get_all_records()
+                    
+                    # 1. Load Existing Feed for Deduplication
+                    try:
+                        feed_ws = sh.worksheet("ActivityFeed")
+                        existing_feed = feed_ws.get_all_records()
+                        # Create set of (Runner, Timestamp) to prevent duplicates
+                        existing_keys = set((row['Runner'], row['Timestamp']) for row in existing_feed)
+                    except:
+                        existing_keys = set()
+
                     bar = st.progress(0, text="Syncing...")
                     all_new_feed_items = []
                     
@@ -476,25 +489,32 @@ with st.sidebar:
                         new_token = get_new_token(row['refresh_token'])
                         
                         if new_token:
-                            last_epoch = row['last_synced']
                             clean_name = row['name'].replace(" *", "")
-                            new_counts, new_epoch, new_feed = fetch_efforts(new_token, last_epoch, clean_name)
                             
-                            all_new_feed_items.extend(new_feed)
-                            total_new = sum(new_counts.values())
+                            # FETCH ABSOLUTE COUNTS (Recalculate entire challenge)
+                            absolute_counts, new_epoch, new_feed = fetch_efforts_absolute(new_token, clean_name)
                             
-                            if total_new > 0:
-                                row_idx = i + 2
-                                sheet.update_cell(row_idx, 4, new_epoch)
-                                sheet.update_cell(row_idx, 5, row['total_count'] + total_new)
+                            # Deduplicate Feed Items
+                            for item in new_feed:
+                                # item = [Runner, Timestamp, Title, Desc, Dist, Kudos]
+                                key = (item[0], item[1])
+                                if key not in existing_keys:
+                                    all_new_feed_items.append(item)
+                                    existing_keys.add(key) # Add to set to prevent double adding in same loop
+                            
+                            # Overwrite Totals in Sheet
+                            total_new = sum(absolute_counts.values())
+                            row_idx = i + 2
+                            sheet.update_cell(row_idx, 4, new_epoch)
+                            sheet.update_cell(row_idx, 5, total_new)
+                            
+                            for s_idx, sid in enumerate(SEGMENT_IDS):
+                                col_idx = 6 + s_idx
+                                sheet.update_cell(row_idx, col_idx, absolute_counts[sid])
                                 
-                                for s_idx, sid in enumerate(SEGMENT_IDS):
-                                    if new_counts[sid] > 0:
-                                        col_idx = 6 + s_idx
-                                        current_val = row[SEGMENTS[sid]]
-                                        sheet.update_cell(row_idx, col_idx, current_val + new_counts[sid])
                         time.sleep(1)
                     
+                    # Batch upload new feed items if any
                     if all_new_feed_items:
                         try:
                             fw = sh.worksheet("ActivityFeed")

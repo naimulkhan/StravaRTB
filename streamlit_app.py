@@ -84,9 +84,8 @@ def get_new_token(refresh_token):
 
 def fetch_activities(access_token, start_epoch, runner_name):
     """
-    The Single Source of Truth Function.
-    Fetches activities since 'start_epoch'.
-    CRITICAL: Only adds to feed if a Challenge Segment was actually run.
+    Fetches activities. 
+    CRITICAL: Only adds to Feed if a Challenge Segment was actually run.
     """
     headers = {'Authorization': f"Bearer {access_token}"}
     activities_url = "https://www.strava.com/api/v3/athlete/activities"
@@ -108,13 +107,11 @@ def fetch_activities(access_token, start_epoch, runner_name):
         return counts, current_max_epoch, feed_items
     
     for act in activities:
-        # 1. Skip non-run activities immediately to save API calls
+        # 1. Skip non-run activities immediately
         if act.get('type') not in ['Run', 'Walk', 'Hike']:
             continue
 
         run_ts = datetime.strptime(act['start_date'], "%Y-%m-%dT%H:%M:%SZ").timestamp()
-        
-        # Track the latest timestamp seen
         if run_ts > current_max_epoch:
             current_max_epoch = int(run_ts)
             
@@ -125,7 +122,7 @@ def fetch_activities(access_token, start_epoch, runner_name):
         if detail_res.status_code == 200:
             data = detail_res.json()
             
-            # 2. Check for Segments in this run
+            # 2. Count segments for THIS specific run
             efforts = data.get('segment_efforts', [])
             segments_matched_in_this_run = 0
             
@@ -178,29 +175,7 @@ if not df.empty:
             
             st.caption("🔥 Fresh off the press")
             
-            cards_html = ""
-            for i, row in df_feed.iterrows():
-                desc = str(row['Description'])
-                if desc == "nan" or desc == "": desc = "No comments."
-                desc = desc.replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
-                
-                date_str = row['Timestamp_Obj'].strftime('%b %d')
-                
-                cards_html += f"""
-                <div class="card">
-                    <div class="card-header">
-                        <strong>{row['Runner']}</strong>
-                        <span class="card-date">{date_str}</span>
-                    </div>
-                    <div class="card-title">{row['Title']}</div>
-                    <div class="card-body">{desc}</div>
-                    <div class="card-footer">
-                        <span>👍 {row['Kudos']}</span>
-                        <span>📏 {row['Distance']} km</span>
-                    </div>
-                </div>
-                """
-            
+            # CSS for Horizontal Scroll Snap
             st.markdown(f"""
             <style>
                 .scroll-container {{
@@ -262,11 +237,32 @@ if not df.empty:
                     font-weight: bold;
                 }}
             </style>
-            
-            <div class="scroll-container">
-                {cards_html}
-            </div>
             """, unsafe_allow_html=True)
+
+            cards_html = ""
+            for i, row in df_feed.iterrows():
+                desc = str(row['Description'])
+                if desc == "nan" or desc == "": desc = "No comments."
+                desc = desc.replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
+                
+                date_str = row['Timestamp_Obj'].strftime('%b %d')
+                
+                cards_html += f"""
+                <div class="card">
+                    <div class="card-header">
+                        <strong>{row['Runner']}</strong>
+                        <span class="card-date">{date_str}</span>
+                    </div>
+                    <div class="card-title">{row['Title']}</div>
+                    <div class="card-body">{desc}</div>
+                    <div class="card-footer">
+                        <span>👍 {row['Kudos']}</span>
+                        <span>📏 {row['Distance']} km</span>
+                    </div>
+                </div>
+                """
+            
+            st.markdown(f'<div class="scroll-container">{cards_html}</div>', unsafe_allow_html=True)
 
     except Exception as e:
         pass

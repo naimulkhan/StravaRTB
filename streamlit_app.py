@@ -259,38 +259,6 @@ if not df.empty:
                 use_container_width=True
             )
 
-    col_viz1, col_viz2 = st.columns(2)
-
-    with col_viz1:
-        st.subheader("🔥 Effort Heatmap")
-        seg_cols = list(SEGMENTS.values())
-        valid_seg_cols = [c for c in seg_cols if c in df.columns]
-        
-        if valid_seg_cols:
-            heat_data = df.melt(id_vars=['name'], value_vars=valid_seg_cols, var_name='Segment', value_name='Efforts')
-            heat_data = heat_data[heat_data['Efforts'] > 0]
-
-            c = alt.Chart(heat_data).mark_rect().encode(
-                x=alt.X('Segment:N', axis=alt.Axis(labelAngle=-45)),
-                y=alt.Y('name:N', title=None),
-                color=alt.Color('Efforts:Q', scale=alt.Scale(scheme='orangered')),
-                tooltip=['name', 'Segment', 'Efforts']
-            ).properties(height=350)
-            
-            st.altair_chart(c, use_container_width=True)
-
-    with col_viz2:
-        st.subheader("🧪 Runner Types")
-        df['unique_segments'] = df[valid_seg_cols].gt(0).sum(axis=1)
-        
-        scatter = alt.Chart(df).mark_circle(size=100).encode(
-            x=alt.X('unique_segments:Q', title='Segments Attempted', scale=alt.Scale(domain=[0, len(valid_seg_cols)+1])),
-            y=alt.Y('total_count:Q', title='Total Efforts'),
-            color='name:N',
-            tooltip=['name', 'total_count', 'unique_segments']
-        ).properties(height=350).interactive()
-        
-        st.altair_chart(scatter, use_container_width=True)
 
 else:
     st.info("Starting up... No data found yet.")

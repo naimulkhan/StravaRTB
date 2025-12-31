@@ -538,6 +538,10 @@ with st.sidebar:
             # 3. SYNC ALL
             with tab3:
                 st.caption("Syncs only connected Strava users.")
+                
+                # --- NEW FORCE RESYNC CHECKBOX ---
+                force_full_sync = st.checkbox("Force Full History Resync (Check this if you cleared the feed)")
+                
                 if st.button("Start Sync"):
                     # 1. READ ALL DATA INTO MEMORY ONCE
                     records = sheet.get_all_records()
@@ -570,11 +574,15 @@ with st.sidebar:
                         if new_token:
                             clean_name = row['name'].replace(" *", "")
                             
-                            # Hybrid Sync Logic
+                            # --- HYBRID SYNC LOGIC ---
                             last_sync_ts = row.get('last_synced', 0)
                             start_ts = int(CHALLENGE_START_DATE.timestamp())
                             
-                            if last_sync_ts and int(last_sync_ts) > start_ts:
+                            # LOGIC: Force Full OR Standard Incremental Check
+                            if force_full_sync:
+                                fetch_mode = "FULL"
+                                fetch_start = start_ts
+                            elif last_sync_ts and int(last_sync_ts) > start_ts:
                                 fetch_mode = "INCREMENTAL"
                                 fetch_start = int(last_sync_ts)
                             else:
@@ -600,6 +608,7 @@ with st.sidebar:
                                     sname = SEGMENTS[sid]
                                     df_sync.at[i, sname] += new_counts[sid]
                             else:
+                                # FULL SYNC OVERWRITES
                                 df_sync.at[i, 'total_count'] = total_new
                                 for sid in SEGMENT_IDS:
                                     sname = SEGMENTS[sid]

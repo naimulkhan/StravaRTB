@@ -438,10 +438,7 @@ with st.sidebar:
                         time.sleep(1)
 
                 st.info("Scanning history... please wait.")
-                # Always use Start Date for new connections
                 start_epoch = int(CHALLENGE_START_DATE.timestamp())
-                
-                # UNIFIED FUNCTION CALL (Ensures filters applied on join)
                 counts, last_epoch, feed_items = fetch_activities(data_json['access_token'], start_epoch, new_full_name)
                 
                 if feed_items:
@@ -546,7 +543,6 @@ with st.sidebar:
                     records = sheet.get_all_records()
                     df_sync = pd.DataFrame(records)
                     
-                    # Convert columns to numeric for calculation
                     numeric_cols = ["total_count", "last_synced"] + list(SEGMENTS.values())
                     for c in numeric_cols:
                         if c in df_sync.columns:
@@ -615,12 +611,8 @@ with st.sidebar:
                     
                     # 3. BATCH WRITE EVERYTHING BACK ONCE
                     if updates_made:
-                        st.caption("💾 Saving to database...")
                         # Convert DataFrame back to list of lists for GSpread
-                        # Replace NaN with 0 or empty string to avoid JSON errors
                         df_sync = df_sync.fillna(0)
-                        
-                        # Prepare data: Header + Rows
                         data_to_upload = [df_sync.columns.values.tolist()] + df_sync.values.tolist()
                         
                         # One API call to rule them all

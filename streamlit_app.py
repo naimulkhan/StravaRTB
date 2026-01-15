@@ -393,7 +393,6 @@ with st.sidebar:
         "&approval_prompt=force&scope=activity:read_all"
     )
     st.link_button("Connect Strava", auth_url)
-    
     # Handle Callback
     if "code" in st.query_params:
         code = st.query_params["code"]
@@ -409,7 +408,15 @@ with st.sidebar:
             ath = data_json['athlete']
             new_full_name = f"{ath['firstname']} {ath['lastname']}"
             
-            records = sheet.get_all_records()
+            # --- ROBUST SHEET READ (RETRY LOGIC) ---
+            records = []
+            for attempt in range(3):
+                try:
+                    records = sheet.get_all_records()
+                    break
+                except Exception as e:
+                    time.sleep(2)
+            
             df_auth = pd.DataFrame(records)
             
             is_already_connected = False
@@ -427,9 +434,11 @@ with st.sidebar:
                         (df_auth['refresh_token'] == 'SCRAPED')
                     ]
                     if not scraped_match.empty:
-                        row_to_delete = scraped_match.index[0] + 2 
-                        sheet.delete_rows(row_to_delete)
-                        st.caption(f"Upgraded {new_full_name} from Scraped to Connected! 🟢")
+                        try:
+                            row_to_delete = scraped_match.index[0] + 2 
+                            sheet.delete_rows(row_to_delete)
+                            st.caption(f"Upgraded {new_full_name} from Scraped to Connected! 🟢")
+                        except: pass
                         time.sleep(1)
 
                 st.info("Scanning history... please wait.")
@@ -453,12 +462,24 @@ with st.sidebar:
                     total
                 ] + segment_values
                 
-                sheet.append_row(new_row)
-                update_last_edit() 
-                st.balloons()
-                st.success("Registered! You are now Connected 🟢")
-                st.query_params.clear()
-
+                # --- ROBUST SAVE (RETRY LOGIC) ---
+                saved_successfully = False
+                for attempt in range(5): # Try 5 times
+                    try:
+                        sheet.append_row(new_row)
+                        update_last_edit() 
+                        saved_successfully = True
+                        break # Success! Exit loop
+                    except Exception as e:
+                        st.caption(f"Database busy, retrying save (Attempt {attempt+1}/5)...")
+                        time.sleep(random.uniform(1, 3)) # Wait random time 1-3s
+                
+                if saved_successfully:
+                    st.balloons()
+                    st.success("Registered! You are now Connected 🟢")
+                    st.query_params.clear()
+                else:
+                    st.error("⚠️ System busy. Please refresh the page and try connecting again.")
     # --- ADMIN SECTION ---
     st.divider()
     with st.expander("👮 Admin Access"):
